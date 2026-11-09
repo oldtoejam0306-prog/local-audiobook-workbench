@@ -224,7 +224,7 @@ def _verified_stage_done(sequence_root, book_id, chapter_id, stage, plan):
         raise ValueError(f'{stage}完成回执存在但章节计划缺失。')
     chapter = next((row for row in plan['chapters'] if isinstance(row, dict) and row.get('id') == chapter_id), None)
     if (chapter is None or identity.get('plan_sha256') != sequence.fingerprint(plan)
-            or identity.get('index_sha256') != plan.get('index_sha256')
+            or ('index_sha256' in identity and identity.get('index_sha256') != plan.get('index_sha256'))
             or identity.get('voice_bindings_sha256') != plan.get('voice_bindings_sha256')):
         raise ValueError(f'{stage}完成回执与章节计划不匹配。')
     return done
@@ -264,9 +264,12 @@ def _diagnostic_issue(row):
         return {'reason': 'invalid_issue_row'}
     keys = ('type', 'reason', 'name', 'candidate_name', 'alias', 'aliases',
             'possible_profiles', 'possible_entities', 'field', 'blocking', 'status',
-            'count', 'entity_id', 'chapter_name', 'labels')
+            'count', 'entity_id', 'chapter_name', 'labels', 'source', 'block_id',
+            'candidate_index')
     result = {key: row[key] for key in keys if key in row and isinstance(
         row[key], (str, bool, int, list, type(None)))}
+    if row.get('type') == 'local_attribution_normalization' and isinstance(row.get('changes'), list):
+        result['count'] = len(row['changes'])
     candidates = row.get('candidates')
     if isinstance(candidates, list):
         result['candidates'] = [item.get('name') for item in candidates
@@ -302,12 +305,13 @@ def task_diagnostics(runtime_root, book_id, chapter_id, *, sequence_root=None, m
     memory_unresolved = memory_doc.get('unresolved', [])
     if not isinstance(memory_unresolved, list):
         raise ValueError('memory unresolved格式无效。')
+    memory_literal_downgrades = _memory_literal_downgrades(memory_unresolved)
     if not isinstance(artifact_pointer.get('auto'), dict):
         return {'status': 'missing_auto_pointer', 'book_id': book_id, 'chapter_id': chapter_id,
                 'profile_blocked': bool(artifact_pointer.get('profile_blocked')),
                 'blocking_conflicts': _diagnostic_rows(artifact_pointer.get('blocking_conflicts', []), 'blocking_conflicts'),
                 'unresolved': [], 'memory_unresolved': _diagnostic_rows(memory_unresolved, 'memory_unresolved'),
-                'narrator_only': [], 'literal_evidence_downgrades': [], 'entities': [],
+                'narrator_only': [], 'literal_evidence_downgrades': memory_literal_downgrades, 'entities': [],
                 'bound_roles': [], 'unbound_roles': [],
                 'profile_conflicts': [], 'alias_conflicts': [], 'unresolved_profiles': [],
                 'profile_registry_status': 'memory artifact未记录auto指针；未回退到其他文件'}
@@ -346,8 +350,7 @@ def task_diagnostics(runtime_root, book_id, chapter_id, *, sequence_root=None, m
     literal_downgrades = [row for row in all_issues if isinstance(row, dict)
                           and (row.get('reason') in _LITERAL_DOWNGRADE_REASONS
                                or row.get('type') in _LITERAL_DOWNGRADE_REASONS)]
-    literal_downgrades.extend(row for row in memory_unresolved if isinstance(row, dict)
-                              and row.get('type') == 'rejected_character_evidence')
+    literal_downgrades.extend(memory_literal_downgrades)
     entity_rows = _diagnostic_rows(entities, 'entities')
     bound_roles = [row for row in entity_rows if row.get('entity_id') in bindings]
     unbound_roles = [row for row in entity_rows if row.get('entity_id') not in bindings]
@@ -370,6 +373,41 @@ def _diagnostic_rows(rows, label):
     if not isinstance(rows, list):
         raise ValueError(label + ' must be a list')
     return [_diagnostic_issue(row) for row in rows]
+
+
+def _memory_literal_downgrades(rows):
+    """Expose downgrade reasons and IDs without copying raw source/model text."""
+    change_types = {'dialogue_downgraded', 'character_candidate_dropped'}
+    reasons = {'evidence_not_literal_source', 'missing_literal_evidence',
+               'candidate_evidence_not_literal_source', 'candidate_name_missing_from_evidence'}
+    output = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if row.get('type') == 'rejected_character_evidence':
+            output.append(_diagnostic_issue(row))
+        elif row.get('type') == 'local_attribution_normalization':
+            changes = row.get('changes')
+            if not isinstance(changes, list):
+                raise ValueError('local_attribution_normalization changes must be a list')
+            for change in changes:
+                if (not isinstance(change, dict) or change.get('type') not in change_types
+                        or change.get('reason') not in reasons):
+                    raise ValueError('local attribution normalization change is invalid')
+                item = {'source': 'local_attribution_normalization',
+                        'type': change['type'], 'reason': change['reason']}
+                if 'id' in change:
+                    if not isinstance(change['id'], str) or not change['id']:
+                        raise ValueError('local attribution block ID is invalid')
+                    item['block_id'] = change['id']
+                if 'index' in change:
+                    if type(change['index']) is not int or change['index'] < 0:
+                        raise ValueError('local attribution candidate index is invalid')
+                    item['candidate_index'] = change['index']
+                if 'block_id' not in item and 'candidate_index' not in item:
+                    raise ValueError('local attribution change has no safe item identity')
+                output.append(item)
+    return output
 
 
 def inspect_chapter_progress(runtime_root, book_id, chapter_ids):
@@ -839,7 +877,7 @@ class App(tk.Tk):
         self.active_range = None
 
     def _refresh_inflight(self):
-        if not self.busy or not self.active_range:
+        if not self.busy or self.busy_kind != 'execute' or not self.active_range:
             return
         now = time.monotonic()
         if now - self._last_progress_probe < 1.0:

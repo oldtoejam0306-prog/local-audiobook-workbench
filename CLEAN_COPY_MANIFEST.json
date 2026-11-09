@@ -13,17 +13,17 @@
     {
       "path": "MATERIALS.md",
       "size_bytes": 3663,
-      "sha256": "26dbd0a48a5bfb8df090b86d4a2681fe0864b7de7d6df071535ccf53548a7037"
+      "sha256": "63e1c19f15b5803514bdc33a4cc3e685bd7863b4cee5737d12e29be3721d2ebe"
     },
     {
       "path": "NOTICE",
-      "size_bytes": 320,
-      "sha256": "dde4b68ae4694dfaa645ac29c494cb88ad8ab351da5c55867aafdb93b5a77da2"
+      "size_bytes": 321,
+      "sha256": "e4e8a05b129afb4fa06aca54302a5c929745aa25364820968fd5de5c6f03af47"
     },
     {
       "path": "README.md",
       "size_bytes": 7084,
-      "sha256": "fe56c1414c0fd3abd7a5685e5794d5277b6b0ee7daa8eefcc149fa8efdc9f713"
+      "sha256": "7c98813fff7ee6c975d3f92233b3c8e82d0b894eeb816cfa39b225e9553b5f74"
     },
     {
       "path": "SOURCE_ALLOWLIST.md",
@@ -32,8 +32,8 @@
     },
     {
       "path": "THIRD_PARTY_NOTICES.md",
-      "size_bytes": 1539,
-      "sha256": "8eb985d119629acbcd1645f118c7aa4cd5e373d68b1197689148a2111ab81f09"
+      "size_bytes": 1394,
+      "sha256": "d3c8dfcc1f04ac9306d29446571094fb800a15b523137a8c241a644b38cd3d3d"
     },
     {
       "path": "analysis_dispatch_cache.py",
@@ -842,8 +842,8 @@
     },
     {
       "path": "test_workbench_real_v2_ui.py",
-      "size_bytes": 12459,
-      "sha256": "9e96b761e7ad01b0ef1417e8ea51f11753ea08330601266d2ca956f1950e49ef"
+      "size_bytes": 17303,
+      "sha256": "c037169842e9e6fbe0039bdd654943e4540debf12de4fafe42bbc43d3380a5f4"
     },
     {
       "path": "test_workbench_runtime_jobs.py",
@@ -947,8 +947,8 @@
     },
     {
       "path": "workbench_real_v2_ui.py",
-      "size_bytes": 57547,
-      "sha256": "7e403b452fad81a59958991ff551bf877743e39b6093af7ed3cc95bf241b4332"
+      "size_bytes": 59780,
+      "sha256": "8c1539dd3ab4e0ac1300ed17938a242d133044c0846f61f185ae1bcaa8503494"
     },
     {
       "path": "workbench_voice_panel.py",

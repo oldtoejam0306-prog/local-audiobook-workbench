@@ -169,3 +169,82 @@ class CorrectionSourceTests(unittest.TestCase):
   with self.assertRaises(ValueError):ui.verified_correction_source(selection,'Synthetic Book','c001')
   selection.request.return_value={'book_id':book,'human_reviewed':False,'index_sha256':'a'*64,'payload':payload,'payload_sha256':'0'*64}
   with self.assertRaises(ValueError):ui.verified_correction_source(selection,'Synthetic Book','c001')
+
+class InflightRefreshTests(unittest.TestCase):
+ def test_play_busy_with_active_range_preserves_verified_task_row(self):
+  app=Mock();app.busy=True;app.busy_kind='play';app.active_range=('book-'+('a'*20),('c003',));app._last_progress_probe=0
+  with patch.object(ui,'_sequence_root') as locate:
+   ui.App._refresh_inflight(app)
+  locate.assert_not_called()
+  app.task_tree.item.assert_not_called()
+
+class RealSequenceProgressTests(unittest.TestCase):
+ def _create_job(self,root):
+  import workbench_job_store
+  book=ui.existing.BOOKS['Synthetic Book'];index_sha='a'*64;source_sha='b'*64
+  voices={'narrator':{'voice':'preset:test'}}
+  job=workbench_job_store.begin_job(root,book,index_sha,[{'id':'c003','source_sha256':source_sha}],
+                                    ui.sequence.fingerprint(voices))
+  plan=ui.sequence.create_plan(job['sequence_root'],book,index_sha,
+                               [{'id':'c003','source_sha256':source_sha}],voices)
+  return book,job,plan,source_sha
+
+ def test_progress_accepts_actual_sequence_run_receipt_without_index_identity(self):
+  with tempfile.TemporaryDirectory() as td:
+   root=ui.Path(td);book,job,plan,_source_sha=self._create_job(root);calls={'count':0}
+   def stop_before_memory():
+    calls['count']+=1
+    return calls['count']>1
+   callbacks={stage:(lambda chapter,prior,artifacts,s=stage:{'status':'ok','artifact':{'stage':s}})
+              for stage in ui.sequence.STAGES}
+   result=ui.sequence.run(job['sequence_root'],plan,callbacks,stop_requested=stop_before_memory)
+   self.assertEqual('paused',result['status'])
+   done_path=ui.Path(job['sequence_root'])/book/'c003'/'analyze.done.json'
+   done=ui.json.loads(done_path.read_text(encoding='utf-8'))
+   self.assertNotIn('index_sha256',done['identity'])
+   rows=ui.inspect_chapter_progress(root,book,['c003'])
+   self.assertEqual(['analyze'],rows[0]['completed_stages'])
+   self.assertIsNone(rows[0]['error'])
+
+ def test_optional_index_identity_if_present_must_match_real_plan(self):
+  with tempfile.TemporaryDirectory() as td:
+   root=ui.Path(td);book,job,plan,_source_sha=self._create_job(root);calls={'count':0}
+   def stop_before_memory():
+    calls['count']+=1
+    return calls['count']>1
+   callbacks={stage:(lambda chapter,prior,artifacts,s=stage:{'status':'ok','artifact':{'stage':s}})
+              for stage in ui.sequence.STAGES}
+   ui.sequence.run(job['sequence_root'],plan,callbacks,stop_requested=stop_before_memory)
+   done_path=ui.Path(job['sequence_root'])/book/'c003'/'analyze.done.json'
+   done=ui.json.loads(done_path.read_text(encoding='utf-8'));done['identity']['index_sha256']='0'*64
+   done_path.write_text(ui.json.dumps(done,ensure_ascii=False),encoding='utf-8')
+   rows=ui.inspect_chapter_progress(root,book,['c003'])
+   self.assertIn('analyze完成回执与章节计划不匹配',rows[0]['error'])
+
+ def test_literal_normalization_diagnostics_show_safe_details_for_all_changes(self):
+  with tempfile.TemporaryDirectory() as td:
+   root=ui.Path(td);book,job,_plan,source_sha=self._create_job(root)
+   artifacts=ui.Path(job['job_root'])/'artifacts';artifacts.mkdir()
+   changes=[{'type':'dialogue_downgraded','id':f'b{i:03d}',
+             'reason':'evidence_not_literal_source','original_evidence':'PRIVATE SOURCE QUOTE'}
+            for i in range(6)]
+   memory={'book_id':book,'chapter_id':'c003','source_sha256':source_sha,
+           'unresolved':[{'type':'local_attribution_normalization','changes':changes}],
+           'human_reviewed':False}
+   memory_path=artifacts/'memory.json';memory_raw=workflow._bytes(memory);memory_path.write_bytes(memory_raw)
+   auto={'book_id':book,'chapter_id':'c003','blocked':False,'entities':[],'bindings':{},
+         'unresolved':[],'blocking_conflicts':[],'human_reviewed':False}
+   auto_path=artifacts/'auto.json';auto_raw=workflow._bytes(auto);auto_path.write_bytes(auto_raw)
+   done={'artifact':{'path':str(memory_path),'sha256':hashlib.sha256(memory_raw).hexdigest(),
+                     'auto':{'path':str(auto_path),'sha256':hashlib.sha256(auto_raw).hexdigest()}}}
+   result=ui.task_diagnostics(root,book,'c003',sequence_root=job['sequence_root'],memory_done=done)
+   rows=result['literal_evidence_downgrades']
+   self.assertEqual(6,len(rows))
+   self.assertEqual({f'b{i:03d}' for i in range(6)},{row['block_id'] for row in rows})
+   self.assertTrue(all(row['reason']=='evidence_not_literal_source' for row in rows))
+   self.assertTrue(all('original_evidence' not in row for row in rows))
+   self.assertEqual(6,result['memory_unresolved'][0]['count'])
+
+ def test_malformed_local_normalization_changes_are_rejected(self):
+  with self.assertRaisesRegex(ValueError,'changes must be a list'):
+   ui._memory_literal_downgrades([{'type':'local_attribution_normalization','changes':None}])

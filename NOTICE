@@ -1,6 +1,6 @@
 Copyright 2026 contributors to the local audiobook project.
 
-This preparation subset is licensed under the Apache License, Version 2.0.
+This source distribution is licensed under the Apache License, Version 2.0.
 It contains no vendored Huashuo source code, model weights, voice assets, or
 third-party wheels. See THIRD_PARTY_NOTICES.md for runtime dependency and wider
 project attribution notes.

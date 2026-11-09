@@ -1,6 +1,6 @@
 # Third-party notices
 
-No third-party source code, wheels, model weights, voices, or generated audio are vendored in this candidate. The following are external runtime dependencies or services used by parts of the unreleased wider project; install and retain their notices separately.
+This source distribution uses external runtime dependencies and services. Install them separately and retain their respective notices.
 
 ## Runtime components
 
@@ -13,4 +13,4 @@ No third-party source code, wheels, model weights, voices, or generated audio ar
 
 The Qwen3-TTS source repository identifies Apache-2.0. Individual model card and weight terms must be checked for each selected model/version; no model weight is included or licensed by this repository.
 
-This candidate's Apache-2.0 LICENSE applies only to code selected for this preparation directory. It does not grant rights to third-party services, packages, model assets, user-provided books, or generated media.
+This repository's Apache-2.0 LICENSE applies to the distributed project source. It does not grant rights to third-party services, packages, model assets, user-provided books, or generated media.
