@@ -1,0 +1,45 @@
+{
+  "mac": {
+    "index_registry": "",
+    "data_root": "/var/tmp/audiobook-workbench-data",
+    "stage_root": "/var/tmp/audiobook-workbench/staging",
+    "voice_stage_root": "/var/tmp/audiobook-workbench/staging/voices",
+    "voice_root": "~/AudiobookWorkbench/voice-library",
+    "controlled_root": "/var/tmp/audiobook-workbench/controlled-real",
+    "controlled_voice": {
+      "stage": "/var/tmp/audiobook-workbench/staging/voices/voice-experiment-REPLACE_ME",
+      "vector_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "multivoice_voices": [],
+    "huashuo_root": "~/Huashuo",
+    "huashuo_cli": "huashuo",
+    "voice_design_model_root": "~/.cache/huggingface/hub/models--Qwen--VoiceDesign/snapshots/<revision>",
+    "customvoice_hf_home": "~/.cache/huggingface",
+    "presets_path": "~/Huashuo/source/src/huashuo/voices/presets.json",
+    "ffmpeg": "ffmpeg",
+    "ffprobe": "ffprobe",
+    "sandbox_exec": "/usr/bin/sandbox-exec",
+    "models": {
+      "voice_design": {
+        "role": "voice_design",
+        "model_id": "Qwen/VoiceDesign",
+        "repository_root": "~/.cache/huggingface/hub/models--Qwen--VoiceDesign",
+        "snapshot_root": "~/.cache/huggingface/hub/models--Qwen--VoiceDesign/snapshots/<revision>",
+        "inventory_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "speaker_encoder": {
+        "role": "speaker_encoder",
+        "model_id": "Qwen/Qwen3-TTS-12Hz-1.7B-Base-8bit",
+        "repository_root": "~/.cache/huggingface/hub/models--Qwen--Base",
+        "snapshot_root": "~/.cache/huggingface/hub/models--Qwen--Base/snapshots/<revision>",
+        "inventory_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    },
+    "resource_limits": {
+      "min_pressure_free_percent": 30,
+      "min_available_bytes": 4294967296,
+      "max_child_rss_bytes": 6442450944,
+      "poll_seconds": 2
+    }
+  }
+}

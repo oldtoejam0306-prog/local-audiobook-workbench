@@ -1,0 +1,27 @@
+{
+  "local": {
+    "data_root": "~/AudiobookWorkbench/data"
+  },
+  "workbench": {
+    "data_root": "~/AudiobookWorkbench/real-workbench",
+    "books": [],
+    "remote_progress_files": []
+  },
+  "workbench_v2": {
+    "legacy_root": "",
+    "single_user_ack": false
+  },
+  "remote": {
+    "target": "your-audiobook-mac-alias",
+    "key_file": "",
+    "known_hosts_file": "~/.ssh/audiobook-known-hosts",
+    "project_root": "/opt/audiobook-workbench",
+    "python": "/absolute/path/to/your-mac-venv/bin/python",
+    "config_file": "/etc/audiobook-workbench/config.json",
+    "stage_root": "/var/tmp/audiobook-workbench/staging",
+    "voice_root": "/var/tmp/audiobook-workbench/staging/voices",
+    "controlled_root": "/var/tmp/audiobook-workbench/controlled-real",
+    "data_root": "/var/tmp/audiobook-workbench-data",
+    "profile_rpc": "/opt/audiobook-workbench/profile_manifest_rpc.py"
+  }
+}

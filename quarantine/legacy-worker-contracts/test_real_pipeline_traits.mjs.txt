@@ -1,0 +1,89 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { build, validateResult } from './real_pipeline_context_worker.mjs';
+
+const book = 'book-' + 'a'.repeat(20);
+const chapter = 'c001';
+const text = '甲温和地回答：我急着离开。';
+const quote = '甲温和地回答';
+const payload = {
+  book_id: book,
+  chapter_id: chapter,
+  text,
+  blocks: [{ type: 'dialogue', id: 'd1', text, src: [0, Array.from(text).length] }],
+  prior_context: { version: 1, book_id: book, target_chapter_id: chapter, records: [] },
+};
+const rows = payload.blocks.filter(row => row.type === 'dialogue');
+
+test('worker prompt requests literal source quotes and labels traits as unreviewed', () => {
+  const request = JSON.parse(build(Buffer.from(JSON.stringify(payload))).request.toString('utf8'));
+  const user = request.messages.find(message => message.role === 'user').content;
+  assert.match(user, /traits/);
+  assert.match(user, /逐字连续子串/);
+  assert.match(user, /旧响应按空数组/);
+  assert.match(user, /引用存在只证明字面来源形式，不证明 claim 的语义正确/);
+});
+
+test('valid trait source form is kept as an unreviewed candidate', () => {
+  const result = validateResult({
+    characters: [{ name: '甲', aliases: [], evidence: quote,
+      traits: [{ claim: '温和', quote }] }],
+    chapter_summary: '本章有一段对白。',
+    dialogues: [{ id: 'd1', speaker: '甲', kind: 'dialogue', evidence: text }],
+  }, payload, rows);
+  assert.equal(result.human_reviewed, false);
+  assert.equal(result.trait_semantics_verified, false);
+  assert.deepEqual(result.characters[0].traits, [{
+    claim: '温和', quote, status: 'model_candidate_unreviewed',
+    verification: 'literal_substring_only_not_semantic',
+  }]);
+  assert.equal(result.characters[0].traits_status, 'model_candidate_unreviewed');
+});
+
+test('quote absent from chapter is excluded and leaves a neutral trait fallback', () => {
+  const result = validateResult({
+    characters: [{ name: '甲', aliases: [], evidence: quote,
+      traits: [{ claim: '开朗', quote: '甲开朗地回答' }] }],
+    chapter_summary: '本章有一段对白。',
+    dialogues: [{ id: 'd1', speaker: '甲', kind: 'dialogue', evidence: text }],
+  }, payload, rows);
+  assert.deepEqual(result.characters[0].traits, []);
+  assert.equal(result.characters[0].traits_status, 'neutral_fallback_no_supported_traits');
+  assert.equal(result.characters[0].traits_rejected_count, 1);
+  assert.equal(result.excluded_traits[0].reasons.includes('quote_not_in_chapter'), true);
+});
+
+test('trait claim and quote reject edge whitespace without normalizing source quotes', () => {
+  const result = validateResult({
+    characters: [{ name: '甲', aliases: [], evidence: quote,
+      traits: [
+        { claim: ' 温和', quote },
+        { claim: '温和', quote: ` ${quote}` },
+      ] }],
+    chapter_summary: '本章有一段对白。',
+    dialogues: [{ id: 'd1', speaker: '甲', kind: 'dialogue', evidence: text }],
+  }, payload, rows);
+  assert.deepEqual(result.characters[0].traits, []);
+  assert.equal(result.characters[0].traits_rejected_count, 2);
+  assert.equal(result.excluded_traits[0].reasons.includes('invalid_claim'), true);
+  assert.equal(result.excluded_traits[1].reasons.includes('invalid_quote'), true);
+});
+
+test('old response without traits remains valid and falls back neutrally', () => {
+  const result = validateResult({
+    characters: [{ name: '甲', aliases: [], evidence: quote }],
+    chapter_summary: '本章有一段对白。',
+    dialogues: [{ id: 'd1', speaker: '甲', kind: 'dialogue', evidence: text }],
+  }, payload, rows);
+  assert.deepEqual(result.characters[0].traits, []);
+  assert.equal(result.characters[0].traits_status, 'neutral_fallback_no_supported_traits');
+  assert.deepEqual(result.excluded_traits, []);
+});
+
+test('character evidence remains fail-closed when it is not a literal chapter substring', () => {
+  assert.throws(() => validateResult({
+    characters: [{ name: '甲', aliases: [], evidence: '甲其实很温柔' }],
+    chapter_summary: '本章有一段对白。',
+    dialogues: [{ id: 'd1', speaker: '甲', kind: 'dialogue', evidence: text }],
+  }, payload, rows), /invalid_character/);
+});

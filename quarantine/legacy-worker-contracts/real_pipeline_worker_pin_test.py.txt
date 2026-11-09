@@ -1,0 +1,110 @@
+import hashlib
+import json
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+import real_pipeline_workflow as workflow
+
+
+def sha(raw):
+    return hashlib.sha256(raw).hexdigest()
+
+
+class WorkerPinTests(unittest.TestCase):
+    def _receipt(self, root, *, worker_hash=None, traits=True):
+        book='book-'+'a'*20
+        payload={'book_id':book,'chapter_id':'c001','text':'甲温和地说。','blocks':[]}
+        input_path=root/'input.json';input_path.write_bytes(workflow._bytes(payload))
+        receipt=root/'receipt';receipt.mkdir()
+        result={'characters':[{'name':'甲','aliases':[],'evidence':'甲温和地说。'}]}
+        if traits: result['characters'][0]['traits']=[{'claim':'温和','quote':'甲温和地说'}]
+        body=workflow._bytes({'usage':{'prompt_tokens':1,'completion_tokens':1},'choices':[{'finish_reason':'stop','message':{'content':json.dumps(result,ensure_ascii=False)}}]})
+        (receipt/'response.body').write_bytes(body)
+        intent={'book_id':book,'chapter_id':'c001','input_sha256':sha(input_path.read_bytes())}
+        meta={'http_status':200,'body_sha256':sha(body)}
+        if worker_hash is not None:
+            intent['worker_source_sha256']=worker_hash;meta['worker_source_sha256']=worker_hash
+        (receipt/'intent.json').write_bytes(workflow._bytes(intent));(receipt/'response.meta.json').write_bytes(workflow._bytes(meta))
+        return input_path,receipt
+
+    def test_pinned_receipt_yields_trait_candidates(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            input_path,receipt=self._receipt(Path(tmp),worker_hash=workflow.CONTEXT_WORKER_SHA256)
+            memory=workflow.candidate_memory(input_path,receipt)
+            self.assertEqual(memory['worker_source_status'],'pinned')
+            self.assertEqual(memory['worker_source_sha256'],workflow.CONTEXT_WORKER_SHA256)
+            self.assertEqual(memory['characters'][0]['traits'][0]['status'],'model_candidate_unreviewed')
+
+    def test_legacy_receipt_is_readable_but_traits_are_not_promoted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            input_path,receipt=self._receipt(Path(tmp))
+            memory=workflow.candidate_memory(input_path,receipt)
+            self.assertEqual(memory['worker_source_status'],'legacy_unverified')
+            self.assertIsNone(memory['worker_source_sha256'])
+            self.assertEqual(memory['characters'][0]['traits'],[])
+            self.assertEqual(memory['characters'][0]['traits_status'],'neutral_fallback_no_supported_traits')
+            self.assertEqual(memory['characters'][0]['traits_rejected_count'],1)
+
+    def test_mismatched_worker_hash_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            input_path,receipt=self._receipt(Path(tmp),worker_hash='0'*64)
+            with self.assertRaisesRegex(ValueError,'worker source pin mismatch'):
+                workflow.candidate_memory(input_path,receipt)
+
+    def test_trait_claim_and_quote_edge_whitespace_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            input_path,receipt=self._receipt(Path(tmp),worker_hash=workflow.CONTEXT_WORKER_SHA256)
+            body=json.loads((receipt/'response.body').read_bytes())
+            content=json.loads(body['choices'][0]['message']['content'])
+            content['characters'][0]['traits']=[
+                {'claim':' 温和','quote':'甲温和地说'},
+                {'claim':'温和','quote':' 甲温和地说'},
+            ]
+            body['choices'][0]['message']['content']=json.dumps(content,ensure_ascii=False)
+            raw=workflow._bytes(body);(receipt/'response.body').write_bytes(raw)
+            meta=json.loads((receipt/'response.meta.json').read_bytes());meta['body_sha256']=sha(raw)
+            (receipt/'response.meta.json').write_bytes(workflow._bytes(meta))
+            memory=workflow.candidate_memory(input_path,receipt)
+            self.assertEqual(memory['characters'][0]['traits'],[])
+            self.assertEqual(memory['characters'][0]['traits_rejected_count'],2)
+
+    def test_dispatch_persists_and_checks_worker_pin_without_network(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);book='book-'+'b'*20;payload={'book_id':book,'chapter_id':'c001','text':'甲温和说。'}
+            def fake_run(argv,**kwargs):
+                out=Path(argv[4]);out.mkdir()
+                inp=Path(argv[3]);raw=inp.read_bytes();receipt=out
+                content={'characters':[{'name':'甲','aliases':[],'evidence':'甲温和说。','traits':[{'claim':'温和','quote':'甲温和说'}]}]}
+                body=workflow._bytes({'usage':{'prompt_tokens':1,'completion_tokens':1},'choices':[{'finish_reason':'stop','message':{'content':json.dumps(content,ensure_ascii=False)}}]});(receipt/'response.body').write_bytes(body)
+                intent={'book_id':book,'chapter_id':'c001','input_sha256':sha(raw),'worker_source_sha256':workflow.CONTEXT_WORKER_SHA256}
+                meta={'http_status':200,'body_sha256':sha(body),'worker_source_sha256':workflow.CONTEXT_WORKER_SHA256}
+                (receipt/'intent.json').write_bytes(workflow._bytes(intent));(receipt/'response.meta.json').write_bytes(workflow._bytes(meta))
+                return type('Proc',(),{'returncode':0,'stdout':'','stderr':''})()
+            with patch.object(workflow.subprocess,'run',side_effect=fake_run):
+                result=workflow.dispatch_chapter(payload,root/'private',root/'jobs')
+            task=root/'private'/(book+'-c001')
+            state=json.loads((task/'dispatch-state.json').read_bytes())
+            self.assertEqual(state['worker_source_sha256'],workflow.CONTEXT_WORKER_SHA256)
+            memory=workflow.candidate_memory(result['input_path'],result['receipt_dir'])
+            self.assertEqual(memory['worker_source_status'],'pinned')
+            self.assertEqual(memory['characters'][0]['traits'][0]['verification'],'literal_substring_only_not_semantic')
+
+    def test_missing_or_changed_dispatch_file_fails_before_reservation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);payload={'book_id':'book-'+'c'*20,'chapter_id':'c001'}
+            missing=root/'missing.mjs'
+            with patch.object(workflow,'CONTEXT_WORKER_PATH',missing):
+                with self.assertRaisesRegex(ValueError,'pinned context worker unavailable'):
+                    workflow.dispatch_chapter(payload,root/'private',root/'jobs')
+            self.assertFalse((root/'private').exists())
+            changed=root/'changed.mjs';changed.write_text('changed')
+            with patch.object(workflow,'CONTEXT_WORKER_PATH',changed):
+                with self.assertRaisesRegex(ValueError,'pinned context worker changed'):
+                    workflow.dispatch_chapter(payload,root/'private',root/'jobs')
+            self.assertFalse((root/'private').exists())
+
+
+if __name__=='__main__':
+    unittest.main()
