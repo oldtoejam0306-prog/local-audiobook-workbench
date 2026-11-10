@@ -68,6 +68,15 @@ try:
   (root/'synthesis-statistics.json').write_text(json.dumps(vars(statistics)),encoding='utf-8')
   return statistics
  synthmod.synthesize=verified_synthesize
+ from natural_pacing import adjust_narration_dialogue_pauses
+ original_layout=post.layout
+ def handoff_layout(plan,keys,workdir,target_lufs=post.TARGET_LUFS,pauses=None):
+  adjusted,changes=(adjust_narration_dialogue_pauses(plan,refs['narrator'],{**post.PAUSES,**(pauses or {})})
+                    if 'narrator' in refs else (plan,[]))
+  (root/'handoff-pauses.json').write_text(json.dumps({'source_sha256':data['source_sha256'],
+   'full_handoff_seconds':0.50,'continuation_cue_seconds':0.35,'changes':changes}),encoding='utf-8')
+  return original_layout(adjusted,keys,workdir,target_lufs,pauses)
+ post.layout=handoff_layout
  reads=[];orig=library.Voice.vector
  def trace(voice):
   path=voice.vector_path;digest=hashlib.sha256(path.read_bytes()).hexdigest();arr=orig(voice)

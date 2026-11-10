@@ -62,7 +62,8 @@ class MacChapterProtocolTests(unittest.TestCase):
                      'release_config.py': '# portable config helper\n',
                      'native_unit_cache.py': '# content-addressed unit cache\n',
                      'mac_render_resources.py': '# shared resource slot\n',
-                     'chapter_model_cache.py': '# confined COW model helper\n'}
+                     'chapter_model_cache.py': '# confined COW model helper\n',
+                     'natural_pacing.py': '# synthetic pacing helper\n'}
             for name, body in files.items(): (code / name).write_text(body, encoding='utf-8')
             request = {'book_id': 'b', 'chapter_id': 'c', 'source_sha256': 'a' * 64,
                 'segments': [{'speaker_id': 'alpha', 'text': '甲'}, {'speaker_id': 'beta', 'text': '乙'},
@@ -76,6 +77,30 @@ class MacChapterProtocolTests(unittest.TestCase):
             self.assertEqual(monitor_sha, sha((run / 'monitor.py').read_bytes()))
             self.assertIn('generic multi-role driver', driver)
             self.assertIn("'--no-titles'", (run / 'isolated_huashuo_library.py').read_text())
+            self.assertEqual(sha((code/'natural_pacing.py').read_bytes()),sha((run/'natural_pacing.py').read_bytes()))
+
+    def test_normal_render_entry_pins_and_stages_active_pacing_hook(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            request={'book_id':'book-test','chapter_id':'c001','source_sha256':'a'*64,
+                     'segments':[],'voices':{}}
+            with patch.object(mac,'ROOT',root):
+                run=mac._prepare_run(request,{},'')
+            settings=json.loads((run/'cache-settings.json').read_bytes())
+            helper=Path(mac.CODE_DIR)/'natural_pacing.py'
+            names=('console_chapter_render_mac.py','native_unit_cache.py','chapter-render-driver.py',
+                   'chapter-monitor.py','chapter_model_cache.py','mac_render_resources.py',
+                   'isolated_huashuo_library.py','release_config.py','natural_pacing.py')
+            pins={name:sha((Path(mac.CODE_DIR)/name).read_bytes()) for name in names}
+            self.assertEqual(sha(mac._canonical(pins)),settings['adapter_sha256'])
+            mac._build_driver(run,request,'')
+            self.assertEqual(sha(helper.read_bytes()),sha((run/'natural_pacing.py').read_bytes()))
+            driver=(run/'render-driver.py').read_text(encoding='utf-8')
+            self.assertIn('post.layout=handoff_layout',driver)
+            self.assertIn('adjust_narration_dialogue_pauses(plan,refs',driver)
+            self.assertIn('expected=[(c,refs[role])',driver)
+            self.assertIn('actual=[(c,u.voice)',driver)
+            self.assertIn('original_synthesize(units,engine,workdir,language,*args,**kwargs)',driver)
 
 
 class WindowsAdapterProtocolTests(unittest.TestCase):

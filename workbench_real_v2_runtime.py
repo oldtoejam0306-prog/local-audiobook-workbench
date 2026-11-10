@@ -146,7 +146,7 @@ def make_executor(name, assignments=None, legacy_guard=legacy_check, *,
             actual_voices = {'narrator': {'id': 'narrator', 'voice': 'preset:test'},
                              'characters': {}, 'auto_narrator_sha256': seq.fingerprint(narrator)}
             selected = auto._read_selections(base / 'auto-voices', book)
-            code_files = ['real_book_renderer.py', 'console_chapter_render_mac.py', 'native_unit_cache.py',
+            code_files = ['real_book_renderer.py', 'console_chapter_render_mac.py', 'native_unit_cache.py', 'natural_pacing.py',
                           'real_book_auto_callbacks.py', 'real_pipeline_context_worker.mjs',
                           'real_pipeline_analysis.py','analysis_dispatch_cache.py','attribution_result_validation.py',
                           'context_compaction.py','correction_memory.py','real_book_sequence_callbacks.py',

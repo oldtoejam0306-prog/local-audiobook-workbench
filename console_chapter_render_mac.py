@@ -140,7 +140,7 @@ def _prepare_run(req, resolved, text):
     (run / 'stderr.log').write_text('', encoding='utf-8')
     cache_components = ('console_chapter_render_mac.py', 'native_unit_cache.py',
         'chapter-render-driver.py', 'chapter-monitor.py', 'chapter_model_cache.py',
-        'mac_render_resources.py', 'isolated_huashuo_library.py', 'release_config.py')
+        'mac_render_resources.py', 'isolated_huashuo_library.py', 'release_config.py', 'natural_pacing.py')
     pins = {name: _sha((CODE_DIR / name).read_bytes()) for name in cache_components}
     _atomic(run / 'cache-settings.json', {'root': str(ROOT / 'unit-cache'),
         'adapter_sha256': _sha(_canonical(pins)), 'components': pins})
@@ -193,7 +193,8 @@ def _build_driver(run, request, text):
     monitor = CODE_DIR / 'chapter-monitor.py'
     required = (driver, monitor, CODE_DIR / 'isolated_huashuo_library.py',
                 CODE_DIR / 'release_config.py', CODE_DIR / 'native_unit_cache.py',
-                CODE_DIR / 'mac_render_resources.py', CODE_DIR / 'chapter_model_cache.py')
+                CODE_DIR / 'mac_render_resources.py', CODE_DIR / 'chapter_model_cache.py',
+                CODE_DIR / 'natural_pacing.py')
     if not all(path.is_file() and not path.is_symlink() for path in required):
         raise RuntimeError('portable chapter driver closure is incomplete')
     shutil.copyfile(driver, run / 'render-driver.py')
@@ -204,7 +205,7 @@ def _build_driver(run, request, text):
     if wrapper.count(title_marker) != 1: raise RuntimeError('wrapper no-titles marker changed')
     wrapper = wrapper.replace(title_marker, "if command in ('synth','package'):args.extend(['--no-opening','--no-closing','--no-titles'])")
     (run / 'isolated_huashuo_library.py').write_text(wrapper, encoding='utf-8')
-    for name in ('release_config.py', 'native_unit_cache.py', 'mac_render_resources.py', 'chapter_model_cache.py'):
+    for name in ('release_config.py', 'native_unit_cache.py', 'mac_render_resources.py', 'chapter_model_cache.py', 'natural_pacing.py'):
         shutil.copyfile(CODE_DIR / name, run / name)
     return monitor_sha
 

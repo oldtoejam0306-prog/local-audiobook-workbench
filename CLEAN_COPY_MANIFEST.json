@@ -12,8 +12,8 @@
     },
     {
       "path": "MATERIALS.md",
-      "size_bytes": 3663,
-      "sha256": "63e1c19f15b5803514bdc33a4cc3e685bd7863b4cee5737d12e29be3721d2ebe"
+      "size_bytes": 3960,
+      "sha256": "91925fbca54ecbd8997983b1594d62a9d4bb27bbc168c18157946a4dec5ba0e1"
     },
     {
       "path": "NOTICE",
@@ -22,8 +22,8 @@
     },
     {
       "path": "README.md",
-      "size_bytes": 7084,
-      "sha256": "7c98813fff7ee6c975d3f92233b3c8e82d0b894eeb816cfa39b225e9553b5f74"
+      "size_bytes": 7250,
+      "sha256": "e69d773eed1cf4fab0f70a51a4c07fed98243fe77dbee662844fe9b683efa585"
     },
     {
       "path": "SOURCE_ALLOWLIST.md",
@@ -117,8 +117,8 @@
     },
     {
       "path": "chapter-render-driver.py",
-      "size_bytes": 7672,
-      "sha256": "7d388f365ed27ad863d271b5f667bd6354dbd4d4a4c197c62232b3d9f34219ab"
+      "size_bytes": 8308,
+      "sha256": "d88a9c437fe42083fb9f917cd5e2df1aefe6a448be34549ad91ea9b96a377b9e"
     },
     {
       "path": "chapter_attribution_input.py",
@@ -182,8 +182,8 @@
     },
     {
       "path": "console_chapter_render_mac.py",
-      "size_bytes": 17847,
-      "sha256": "92bec7fa2181d6ac0279f81222398e3454bd0441ff1e284bd60f01ebacf4e0f7"
+      "size_bytes": 17937,
+      "sha256": "3c598b23e1dcaf03d04e40a1c746ae334006d3eab8dec87c31b8434473c94437"
     },
     {
       "path": "console_voice_billing.py",
@@ -392,8 +392,8 @@
     },
     {
       "path": "natural_pacing.py",
-      "size_bytes": 4341,
-      "sha256": "43119d8968f8003df664c64c4026b05b26e3733cb5f92c64e5c52b5579da5761"
+      "size_bytes": 8437,
+      "sha256": "34de28da33f91631b60f2cc32b3a59dbda65a08bec9be73508101023ee04e0d0"
     },
     {
       "path": "persisted_chapter_index.py",
@@ -717,8 +717,8 @@
     },
     {
       "path": "test_mac_chapter_renderer_protocol.py",
-      "size_bytes": 11507,
-      "sha256": "28eb55b462b698d6c5b35c3775c762251d3a43abbb6188f08e6aed269c35d8e5"
+      "size_bytes": 13251,
+      "sha256": "d1912eaf6e6da526b591143efb7c78eb7f71df12d1ea453efbfb6a49b99f952e"
     },
     {
       "path": "test_mac_render_resources.py",
@@ -737,8 +737,8 @@
     },
     {
       "path": "test_natural_pacing.py",
-      "size_bytes": 6307,
-      "sha256": "d5bbc051ad6483f98e6aef0524914d8f84651d109dd1f76fe55b9d5aeac724c5"
+      "size_bytes": 13835,
+      "sha256": "4ae2e0cc547e294668d274edfe440b66d56df4091c2e52656ab88660d5871510"
     },
     {
       "path": "test_quality_report_privacy.py",
@@ -937,8 +937,8 @@
     },
     {
       "path": "workbench_real_v2_runtime.py",
-      "size_bytes": 11242,
-      "sha256": "83d34090813f4f1bf9397169bf6144a01bef987b1b29a0cf0208802b0909434f"
+      "size_bytes": 11263,
+      "sha256": "ecc517e2c90d2332d87e51b2869511ac6e10cfe7bd6bf3db758172ac826f1d38"
     },
     {
       "path": "workbench_real_v2_sequence_adapter.py",

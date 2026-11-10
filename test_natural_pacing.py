@@ -112,6 +112,163 @@ class NaturalPacingTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'each chapter'):
                 bridge.render_document(invalid, {'book\0a': voice}, root, synth)
 
+    def test_native_plan_narration_dialogue_pause_floors_are_pure_and_bounded(self):
+        from dataclasses import dataclass
 
+        @dataclass(frozen=True)
+        class Unit:
+            kind: str
+            text: str
+            voice: str
+            instruct: str | None
+            block_ids: tuple[str, ...]
+            chapter: int
+            after: str
+            pause_override: float | None = None
+            reference: str | None = None
+
+            @property
+            def page_text(self):
+                return self.reference if self.reference is not None else self.text
+
+        @dataclass(frozen=True)
+        class Chapter:
+            index: int
+
+        @dataclass(frozen=True)
+        class Plan:
+            units: list[Unit]
+            chapters: list[Chapter]
+
+        units = [
+            Unit('body', '他说完了。”  ', 'narrator-ref', None, ('a',), 0, 'turn'),
+            Unit('body', '人物接话。', 'character-ref', 'warm', ('b',), 0, 'sentence'),
+            Unit('body', '他低声说道：“', 'narrator-ref', None, ('c',), 0, 'sentence'),
+            Unit('body', '“明白。”', 'character-ref', 'warm', ('d',), 0, 'paragraph'),
+            Unit('body', '旁白继续。', 'narrator-ref', None, ('e',), 0, 'paragraph'),
+            Unit('body', '人物回答。', 'character-ref', 'warm', ('f',), 0, 'turn'),
+            Unit('body', '他补充说道：”  ', 'narrator-ref', None, ('g',), 0, 'sentence'),
+            Unit('body', '另一个声音。', 'character-ref', 'cool', ('h',), 0, 'sentence'),
+            Unit('body', '对话继续。', 'character-ref', 'cool', ('i',), 0, 'turn'),
+            Unit('body', '新段旁白。', 'narrator-ref', None, ('j',), 0, 'paragraph'),
+            Unit('body', '保留长停顿。', 'narrator-ref', None, ('k',), 0, 'long'),
+            Unit('body', '角色发言。', 'character-ref', 'warm', ('l',), 0, 'turn'),
+            Unit('body', '显式零停顿。', 'narrator-ref', None, ('m',), 0, 'turn', 0.0),
+            Unit('body', '不能覆盖。', 'character-ref', 'warm', ('n',), 0, 'end'),
+            Unit('heading', '小标题', 'narrator-ref', None, ('o',), 0, 'turn'),
+            Unit('body', '章节边界', 'character-ref', 'warm', ('p',), 1, 'turn'),
+            Unit('body', '同一角色', 'character-ref', 'warm', ('q',), 1, 'turn'),
+        ]
+        plan = Plan(units, [Chapter(0), Chapter(1)])
+        original_units = tuple(plan.units)
+        original_content = [(u.text, u.voice, u.instruct, u.block_ids, u.chapter) for u in units]
+        changed, rows = np.adjust_narration_dialogue_pauses(
+            plan, 'narrator-ref', {'turn': 0.25, 'sentence': 0.18,
+                                   'paragraph': 0.35, 'long': 0.90, 'end': 0.5})
+
+        self.assertIsNot(changed, plan)
+        self.assertEqual(original_units, tuple(plan.units))
+        self.assertEqual([0.50, 0.50, 0.35, 0.50, 0.50, 0.50, 0.35, None,
+                          0.50, None, None, 0.50, 0.0, None, None, None, None],
+                         [u.pause_override for u in changed.units])
+        self.assertEqual(original_content,
+                         [(u.text, u.voice, u.instruct, u.block_ids, u.chapter) for u in changed.units])
+        self.assertEqual([
+            {'unit_index': 0, 'chapter_index': 0, 'before_seconds': 0.25,
+             'after_seconds': 0.50, 'type': 'full_handoff', 'direction': 'narration_to_dialogue'},
+            {'unit_index': 1, 'chapter_index': 0, 'before_seconds': 0.18,
+             'after_seconds': 0.50, 'type': 'full_handoff', 'direction': 'dialogue_to_narration'},
+            {'unit_index': 2, 'chapter_index': 0, 'before_seconds': 0.18,
+             'after_seconds': 0.35, 'type': 'continuation_cue', 'direction': 'narration_to_dialogue'},
+            {'unit_index': 3, 'chapter_index': 0, 'before_seconds': 0.35,
+             'after_seconds': 0.50, 'type': 'full_handoff', 'direction': 'dialogue_to_narration'},
+            {'unit_index': 4, 'chapter_index': 0, 'before_seconds': 0.35,
+             'after_seconds': 0.50, 'type': 'full_handoff', 'direction': 'narration_to_dialogue'},
+            {'unit_index': 5, 'chapter_index': 0, 'before_seconds': 0.25,
+             'after_seconds': 0.50, 'type': 'full_handoff', 'direction': 'dialogue_to_narration'},
+            {'unit_index': 6, 'chapter_index': 0, 'before_seconds': 0.18,
+             'after_seconds': 0.35, 'type': 'continuation_cue', 'direction': 'narration_to_dialogue'},
+            {'unit_index': 8, 'chapter_index': 0, 'before_seconds': 0.25,
+             'after_seconds': 0.50, 'type': 'full_handoff', 'direction': 'dialogue_to_narration'},
+            {'unit_index': 11, 'chapter_index': 0, 'before_seconds': 0.25,
+             'after_seconds': 0.50, 'type': 'full_handoff', 'direction': 'dialogue_to_narration'},
+        ], rows)
+        self.assertTrue(all(not ({'text', 'voice', 'instruct'} & row.keys()) for row in rows))
+
+    def test_native_plan_keeps_existing_long_pause_and_recognizes_fullwidth_cue(self):
+        from dataclasses import dataclass
+
+        @dataclass(frozen=True)
+        class Unit:
+            kind: str
+            text: str
+            voice: str
+            instruct: str | None
+            block_ids: tuple[str, ...]
+            chapter: int
+            after: str
+            pause_override: float | None = None
+            reference: str | None = None
+
+            @property
+            def page_text(self):
+                return self.reference if self.reference is not None else self.text
+
+        @dataclass(frozen=True)
+        class Plan:
+            units: list[Unit]
+            chapters: list[object]
+
+        plan = Plan([
+            Unit('body', '引用里，」  ', 'narrator-ref', None, ('a',), 0, 'sentence'),
+            Unit('body', '对话。', 'voice-2', None, ('b',), 0, 'turn'),
+            Unit('body', '较长停顿。', 'narrator-ref', None, ('c',), 0, 'long'),
+            Unit('body', '新对话。', 'voice-2', None, ('d',), 0, 'turn'),
+        ], [])
+        changed, rows = np.adjust_narration_dialogue_pauses(
+            plan, 'narrator-ref', {'sentence': 0.18, 'turn': 0.25, 'long': 0.9})
+        self.assertEqual([0.35, 0.50, None, None], [u.pause_override for u in changed.units])
+        self.assertEqual([0.35, 0.50], [row['after_seconds'] for row in rows])
+
+    def test_native_plan_does_not_stack_cue_over_paragraph_pause(self):
+        from dataclasses import dataclass
+
+        @dataclass(frozen=True)
+        class Unit:
+            kind: str
+            text: str
+            voice: str
+            instruct: str | None
+            block_ids: tuple[str, ...]
+            chapter: int
+            after: str
+            pause_override: float | None = None
+            reference: str | None = None
+
+            @property
+            def page_text(self):
+                return self.reference if self.reference is not None else self.text
+
+        @dataclass(frozen=True)
+        class Plan:
+            units: list[Unit]
+            chapters: list[object]
+
+        plan = Plan([
+            Unit('body', '他说，', 'narrator-ref', None, ('a',), 0, 'paragraph'),
+            Unit('body', '“是。”', 'dialogue-ref', None, ('b',), 0, 'turn'),
+        ], [])
+        changed, rows = np.adjust_narration_dialogue_pauses(
+            plan, 'narrator-ref', {'paragraph': 0.35, 'turn': 0.25})
+        self.assertIsNot(changed, plan)
+        self.assertIsNone(changed.units[0].pause_override)
+        self.assertEqual([], rows)
 if __name__ == '__main__':
     unittest.main()
+
+
+
+
+
+
+
