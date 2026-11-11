@@ -67,9 +67,8 @@ class DispatcherStub:
         (receipt / 'usage.json').write_bytes(canonical({'usage': USAGE}))
         source_chapters = [{'chapter_id': c['chapter_id'], 'text_sha256': c['text_sha256'],
                             'codepoint_length': len(c['text'])} for c in request['chapters']]
-        evidence = [{'chapter_id': c['chapter_id'], 'quote': c['text'][:6],
-                     'source_range': [0, 6], 'source_sha256': c['text_sha256']} for c in request['chapters']]
-        first = request['chapters'][0]
+        evidence = [{'chapter_id': c['chapter_id'], 'quote': c['text'],
+                     'source_range': [0, len(c['text'])], 'source_sha256': c['text_sha256']} for c in request['chapters']]
         if len(self.calls) == 1:
             identity = claim('律师', 'explicit', evidence[:1])
             design = {'description': '第一版虚构音色', 'rationale': '依据原文证据',
@@ -78,12 +77,14 @@ class DispatcherStub:
             identity = claim()
             design = {'description': '第二版虚构音色', 'rationale': '依据新章节',
                       'creative_choices': ['语速平稳'], 'status': 'candidate_needs_review'}
-        profile = {'name': '林舟', 'name_evidence': evidence[:1], 'aliases': [],
+        target_names = request['target_names'] if not request['discover_characters'] else ['林舟']
+        profiles = [{'name': name, 'name_evidence': evidence[:1], 'aliases': [],
             'identity': identity, 'gender': claim(), 'age': claim(), 'personality': [],
             'behavior': [], 'speech_style': [], 'voice_design': design, 'uncertainties': []}
+            for name in target_names]
         normalized = {'version': 1, 'mode': 'character_profiles_v1', 'book_id': BOOK,
             'chapter_id': request['chapter_id'], 'status': 'needs_review', 'source': {'chapters': source_chapters},
-            'characters': [profile], 'scope_summary': 'stub', 'narration_design': None,
+            'characters': profiles, 'scope_summary': 'stub', 'narration_design': None,
             'issues': [], 'human_reviewed': False}
         result = {'status': 'needs_review', 'retry_allowed': False, 'response_id': f'response-{len(self.calls)}',
             'usage': USAGE, 'result': normalized}
@@ -92,6 +93,50 @@ class DispatcherStub:
 
 
 class CharacterProfileJobTests(unittest.TestCase):
+    def test_known_json_syntax_failure_recovers_locally_and_reuses_one_provider_reply(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            index = IndexStub(1)
+            original_dispatch = DispatcherStub()
+            originals = {}
+
+            def dispatch(input_path, receipt_dir, jobs_dir):
+                reply = original_dispatch(input_path, receipt_dir, jobs_dir)
+                receipt = Path(receipt_dir) / 'character_profiles_v1'
+                normalized = json.loads((receipt / 'result.json').read_bytes())['result']
+                content = json.dumps({'characters': normalized['characters'], 'relations': [],
+                    'narration_design': None, 'scope_summary': 'synthetic fixture'},
+                    ensure_ascii=False, separators=(',', ':'))
+                content = content.replace(',"scope_summary":', '},"scope_summary":')
+                body = json.loads((receipt / 'response.body').read_bytes())
+                body['choices'][0]['message'] = {'content': content}
+                body_raw = canonical(body)
+                (receipt / 'response.body').write_bytes(body_raw)
+                (receipt / 'response.meta.json').write_bytes(canonical({
+                    'http_status': 200, 'body_sha256': sha(body_raw)}))
+                (receipt / 'result.json').write_bytes(canonical({
+                    'status': 'invalid_or_usage_unknown', 'retry_allowed': False}))
+                for name in ('input.json', 'worker-source.mjs', 'protocol-source.mjs'):
+                    path = Path(input_path).parent / name
+                    originals[path] = sha(path.read_bytes())
+                for name in ('response.body', 'response.meta.json', 'result.json'):
+                    path = receipt / name
+                    originals[path] = sha(path.read_bytes())
+                return reply
+
+            first = jobs.analyze_profile_range(BOOK, 'c001', 'c001', root=root,
+                index_request=index, dispatcher=dispatch)
+            second = jobs.analyze_profile_range(BOOK, 'c001', 'c001', root=root,
+                index_request=index, dispatcher=dispatch)
+            self.assertEqual('needs_review', first['status'])
+            self.assertTrue(second['batches'][0]['reused'])
+            self.assertEqual(1, len(original_dispatch.calls))
+            self.assertTrue(all(sha(path.read_bytes()) == digest for path, digest in originals.items()))
+            batch = next((root / 'profile-tasks' / BOOK).iterdir())
+            repair = json.loads((batch / 'receipt' / 'character_profiles_v1'
+                / 'local-format-recovery.json').read_bytes())
+            self.assertEqual('remove_premature_scope_summary_root_closer', repair['repair']['kind'])
+
     def test_worker_archive_tamper_or_missing_never_redispatches_and_retains_usage(self):
         for filename, missing in (('worker-source.mjs', False), ('worker-source.mjs', True),
                                    ('protocol-source.mjs', False), ('protocol-source.mjs', True)):
@@ -156,6 +201,8 @@ class CharacterProfileJobTests(unittest.TestCase):
             self.assertTrue(Path(result['current_path']).is_file())
             document = json.loads(Path(result['current_path']).read_bytes())
             profile = document['characters'][0]
+            self.assertEqual([['c001', 'c002', 'c003'], ['c004']], [
+                [row['chapter_id'] for row in batch['chapters']] for batch in document['profile_jobs']])
             self.assertEqual('律师', profile['identity']['value'])
             self.assertEqual('第一版虚构音色', profile['voice_design']['description'])
             self.assertEqual(2, len(profile['voice_design_candidates']))
@@ -219,6 +266,35 @@ class CharacterProfileJobTests(unittest.TestCase):
         self.assertEqual('新候选', profile['voice_design_candidates'][-1]['design']['description'])
         self.assertEqual({'林舟','周林'}, {p['name'] for p in merged['characters']})
         self.assertEqual({'林舟','周林'}, {p['name'] for p in merged['alias_conflicts'][0]['candidates']})
+
+    def test_merge_deduplicates_source_bound_relations_and_preserves_unresolved(self):
+        source_sha = sha('林舟是阿舟，周林是同伴。'.encode('utf-8'))
+        quote = '林舟是阿舟，周林是同伴。'
+        evidence = [{'chapter_id': 'c001', 'quote': quote, 'source_sha256': source_sha}]
+        existing = {'version': 1, 'mode': 'character_profiles_v1', 'book_id': BOOK,
+            'source': {'chapters': [{'chapter_id': 'c001', 'text_sha256': source_sha}]},
+            'characters': [
+                {'name': '林舟', 'aliases': [{'name': '阿舟', 'evidence': evidence}]},
+                {'name': '周林', 'aliases': []}],
+            'relations': [], 'unresolved_relations': []}
+        normalized = {'book_id': BOOK, 'mode': 'character_profiles_v1',
+            'source': {'chapters': [{'chapter_id': 'c001', 'text_sha256': source_sha}]},
+            'characters': [], 'narration_design': None,
+            'relations': [
+                {'source': '林舟', 'target': '周林', 'label': '同伴', 'status': 'explicit', 'evidence': evidence},
+                {'source': '未知姓名', 'target': '周林', 'label': '亲属', 'status': 'explicit', 'evidence': evidence}],
+            'unresolved_relations': [{'source': None, 'target': '周林', 'reason': 'missing_endpoint'}]}
+        merged = jobs._merge_registry(existing, normalized,
+            {'batch_source_sha256': 'b' * 64, 'chapters': [{'chapter_id': 'c001'}]})
+        merged = jobs._merge_registry(merged, normalized,
+            {'batch_source_sha256': 'c' * 64, 'chapters': [{'chapter_id': 'c001'}]})
+        self.assertEqual(1, len(merged['relations']))
+        self.assertEqual(('林舟', '周林'), (merged['relations'][0]['source'], merged['relations'][0]['target']))
+        self.assertGreaterEqual(len(merged['unresolved_relations']), 2)
+        legacy = jobs._merge_registry({'characters': []},
+            {'book_id': BOOK, 'mode': 'character_profiles_v1', 'source': {'chapters': []},
+             'characters': [], 'narration_design': None}, {})
+        self.assertEqual([], legacy['relations'])
 
     def _alias_merge_fixture(self, old_quote):
         old_source='c001 source';new_source='c002 source'
@@ -296,6 +372,78 @@ class CharacterProfileJobTests(unittest.TestCase):
             self.assertEqual('needs_review',first['status'])
             self.assertEqual('already_current',second['status'])
             self.assertEqual(1,len(dispatch.calls))
+
+    def test_required_names_trigger_targeted_profiles_when_source_is_current(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td); dispatch=DispatcherStub(); text='林舟遇见看门大妈，又问柳恺。'
+            source_sha=sha(text.encode()); chapter='c001'
+            registry=root/'character-profiles'/BOOK/'current.json'; registry.parent.mkdir(parents=True)
+            registry.write_bytes(canonical({'version':1,'mode':'character_profiles_v1','book_id':BOOK,
+                'source':{'chapters':[{'chapter_id':chapter,'text_sha256':source_sha}]},
+                'characters':[{'name':'林舟','aliases':[]}]}))
+            payload={'book_id':BOOK,'chapter_id':chapter,'text':text,'profile_required_names':['柳恺','看门大妈']}
+            result=jobs.ensure_profiles_for_chapter(payload,root=root,dispatcher=dispatch)
+            request=dispatch.calls[0]
+            self.assertFalse(request['discover_characters'])
+            self.assertEqual(sorted(['看门大妈','柳恺']),request['target_names'])
+            self.assertEqual({'林舟','看门大妈','柳恺'},
+                {p['name'] for p in json.loads(registry.read_bytes())['characters']})
+            self.assertEqual('needs_review',result['status'])
+
+    def test_targeted_and_discovery_cache_scopes_are_separate_and_targeted_reuses(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td); index=IndexStub(1); dispatch=DispatcherStub()
+            payload=index('prepare',BOOK,'c001')['payload']
+            payload['text']='林舟是律师。看门大妈在门口。'
+            jobs.ensure_profiles_for_chapter(payload,root=root,dispatcher=dispatch)
+            current=json.loads((root/'character-profiles'/BOOK/'current.json').read_bytes())
+            current['characters']=[]
+            (root/'character-profiles'/BOOK/'current.json').write_bytes(canonical(current))
+            target_payload=dict(payload,profile_required_names=['看门大妈'])
+            jobs.ensure_profiles_for_chapter(target_payload,root=root,dispatcher=dispatch)
+            self.assertEqual(2,len(dispatch.calls))
+            # Remove the profile while retaining the source so the same targeted
+            # request reaches its own immutable cache entry on the next call.
+            current=json.loads((root/'character-profiles'/BOOK/'current.json').read_bytes())
+            current['characters']=[]
+            (root/'character-profiles'/BOOK/'current.json').write_bytes(canonical(current))
+            result=jobs.ensure_profiles_for_chapter(target_payload,root=root,dispatcher=dispatch)
+            self.assertEqual(2,len(dispatch.calls))
+            self.assertTrue(result['batches'][0]['reused'])
+
+    def test_required_names_accept_only_unique_literal_bounded_names(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td); index=IndexStub(1); dispatch=DispatcherStub()
+            payload=index('prepare',BOOK,'c001')['payload']
+            for names in ([''], ['missing'], ['林舟'*81], ['林舟',None]):
+                with self.subTest(names=names), self.assertRaises(ValueError):
+                    jobs.ensure_profiles_for_chapter(dict(payload,profile_required_names=names),
+                        root=root,dispatcher=dispatch)
+            jobs.ensure_profiles_for_chapter(dict(payload,profile_required_names=['林舟','林舟']),
+                root=root,dispatcher=dispatch)
+            self.assertEqual(['林舟'],dispatch.calls[0]['target_names'])
+
+    def test_required_name_protocol_length_boundary_is_80(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td); dispatch=DispatcherStub(); name='林'*80
+            payload={'book_id':BOOK,'chapter_id':'c001','text':name}
+            result=jobs.ensure_profiles_for_chapter(dict(payload,profile_required_names=[name]),
+                root=root,dispatcher=dispatch)
+            self.assertEqual([name],dispatch.calls[0]['target_names'])
+            self.assertEqual('needs_review',result['status'])
+            self.assertEqual([],dispatch.calls[0]['chapters'][0].get('profile_required_names',[]))
+
+    def test_required_names_accept_only_source_supported_unambiguous_aliases(self):
+        text='林舟又名阿野。'; source_sha=sha(text.encode())
+        registry={'source':{'chapters':[{'chapter_id':'c001','text_sha256':source_sha}]},
+            'characters':[{'name':'林舟','aliases':[{'name':'阿野','evidence':[
+                {'chapter_id':'c001','source_sha256':source_sha,'quote':text}]}]}]}
+        self.assertEqual([],jobs._missing_required_profiles(registry,['阿野']))
+        registry['characters'].append({'name':'阿野','aliases':[]})
+        self.assertEqual(['阿野'],jobs._missing_required_profiles(registry,['阿野']))
+        registry['characters'].pop()
+        registry['characters'][0]['aliases'][0]['evidence'][0]['source_sha256']='f'*64
+        self.assertEqual(['阿野'],jobs._missing_required_profiles(registry,['阿野']))
 
 
 if __name__ == '__main__':

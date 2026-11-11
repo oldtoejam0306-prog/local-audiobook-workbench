@@ -19,6 +19,7 @@ import workbench_real_v2_client as client
 import real_pipeline_workflow as workflow
 import real_book_sequence as sequence
 import correction_memory
+import workbench_audio_revision
 import workbench_voice_panel as voice_panel
 from audio_playback import AudioPlayback, PlaybackCancelled, parse_speed
 
@@ -122,14 +123,31 @@ def completed_audio(sequence_root, book_id, chapter_id):
     return audio
 
 
-def _sequence_root(runtime_root, book_id, chapter_id=None):
+def audio_revision_summary(record):
+    """Describe the verified full-chapter revision and any returned cache counts."""
+    receipt = record.get('receipt') if isinstance(record, dict) else None
+    stats = receipt.get('cache_statistics') if isinstance(receipt, dict) else None
+    if (isinstance(stats, dict) and type(stats.get('generated')) is int
+            and type(stats.get('cached')) is int):
+        return (f"候选已保存并核验；整章重排新生成 {stats['generated']} 个单元，"
+                f"复用缓存 {stats['cached']} 个单元。")
+    return '候选已保存并核验；本次整章重排的缓存计数不可用。'
+
+
+def _sequence_root(runtime_root, book_id, chapter_id=None, *, require_completed=False):
     """Resolve the job-specific sequence base lazily, with legacy layout fallback."""
     try:
         import workbench_job_store
     except ModuleNotFoundError as exc:
         if exc.name != 'workbench_job_store':
             raise
+        if require_completed:
+            return None
         return Path(runtime_root) / 'sequence'
+    if require_completed:
+        found = workbench_job_store.find_sequence_root(
+            runtime_root, book_id, chapter_id, require_completed=True)
+        return Path(found) if found is not None else None
     return Path(workbench_job_store.find_sequence_root(runtime_root, book_id, chapter_id))
 
 
@@ -253,6 +271,26 @@ def _read_hash_pinned_json(pointer, allowed_root, label):
     return json.loads(raw.decode('utf-8')), resolved
 
 
+def _read_profile_registry_snapshot(pointer, runtime_root, book_id):
+    """Resolve legacy current.json pins only through their exact immutable version."""
+    root = Path(runtime_root)
+    current_path = root / 'character-profiles' / book_id / 'current.json'
+    is_known_current = (isinstance(pointer, dict) and isinstance(pointer.get('path'), str)
+                        and Path(pointer['path']).absolute() == current_path.absolute())
+    try:
+        registry, path = _read_hash_pinned_json(pointer, root, 'profile registry snapshot')
+        return registry, path, False
+    except (OSError, ValueError):
+        expected_sha = pointer.get('sha256') if isinstance(pointer, dict) else None
+        if (not is_known_current or not isinstance(expected_sha, str)
+                or not re.fullmatch(r'[0-9a-f]{64}', expected_sha)):
+            raise
+        archived = current_path.parent / 'versions' / (expected_sha + '.json')
+        registry, path = _read_hash_pinned_json(
+            {'path': str(archived), 'sha256': expected_sha}, root, 'profile registry version')
+        return registry, path, True
+
+
 _LITERAL_DOWNGRADE_REASONS = {
     'unproven_profile_alias', 'unproven_existing_alias', 'unproven_alias_ignored',
     'profile_alias_conflict', 'ambiguous_profile_alias', 'ambiguous',
@@ -335,14 +373,16 @@ def task_diagnostics(runtime_root, book_id, chapter_id, *, sequence_root=None, m
     registry_pointer = artifact_pointer.get('profile_registry')
     registry_status = 'memory artifact未记录profile registry指针；未回退到current.json'
     if registry_pointer is not None:
-        registry, _ = _read_hash_pinned_json(registry_pointer, runtime_root, 'profile registry snapshot')
+        registry, _registry_path, used_archive = _read_profile_registry_snapshot(
+            registry_pointer, runtime_root, book_id)
         if (registry.get('book_id') != book_id or registry.get('mode') != 'character_profiles_v1'
                 or registry.get('human_reviewed') is not False):
             raise ValueError('profile registry snapshot身份或审核标记无效。')
         profile_conflicts = _diagnostic_rows(registry.get('profile_conflicts', []), 'profile_conflicts')
         alias_conflicts = _diagnostic_rows(registry.get('alias_conflicts', []), 'alias_conflicts')
         unresolved_profiles = _diagnostic_rows(registry.get('unresolved_profiles', []), 'unresolved_profiles')
-        registry_status = 'hash和书籍身份已核验'
+        registry_status = ('hash和书籍身份已核验（不可变版本）' if used_archive
+                           else 'hash和书籍身份已核验')
 
     narrator_only = [row for row in unresolved if isinstance(row, dict)
                      and row.get('reason') == 'narrator_only_no_direct_character_voice']
@@ -429,9 +469,23 @@ def inspect_chapter_progress(runtime_root, book_id, chapter_ids):
                 if stage == 'render': render_done = done
             diagnostics = task_diagnostics(runtime_root, book_id, chapter_id,
                                            sequence_root=sequence_root, memory_done=memory_done)
-            audio = completed_audio(sequence_root, book_id, chapter_id) if render_done else None
+            audio = None
+            audio_sequence_root = None
+            audio_version = None
+            audio_error = None
+            try:
+                audio_sequence_root = _sequence_root(
+                    runtime_root, book_id, chapter_id, require_completed=True)
+                if audio_sequence_root is not None:
+                    audio = completed_audio(audio_sequence_root, book_id, chapter_id)
+                    audio_version = ('current' if audio_sequence_root.resolve() == sequence_root.resolve()
+                                     else 'historical')
+            except Exception as exc:
+                audio_error = type(exc).__name__ + ': ' + str(exc)
             output.append({'chapter_id': chapter_id, 'sequence_root': str(sequence_root),
                            'completed_stages': completed_stages, 'audio_path': str(audio) if audio else None,
+                           'audio_sequence_root': str(audio_sequence_root) if audio_sequence_root else None,
+                           'audio_version': audio_version, 'audio_error': audio_error,
                            'diagnostics': diagnostics, 'error': None})
         except Exception as exc:
             output.append({'chapter_id': chapter_id, 'sequence_root': None, 'completed_stages': [],
@@ -550,6 +604,8 @@ class App(tk.Tk):
         self.speed_box.pack(side='right', padx=(0, 8))
         self.play_button = ttk.Button(footer, text='播放选中章节', command=self.play_selected, state='disabled')
         self.play_button.pack(side='right')
+        self.revision_button = ttk.Button(footer, text='修订段落音频', command=self.open_audio_revision_dialog, state='disabled')
+        self.revision_button.pack(side='right', padx=(0, 8))
         self.stop_button = ttk.Button(footer, text='停止播放', command=self.stop_playback, state='disabled')
         self.stop_button.pack(side='right', padx=(0, 8))
 
@@ -619,6 +675,8 @@ class App(tk.Tk):
         self.end_box.configure(state='disabled' if busy else 'readonly')
         self.pause_button.configure(state='normal' if self._can_pause() else 'disabled')
         self.play_button.configure(state='disabled' if busy or not self.completed else 'normal')
+        if hasattr(self, 'revision_button'):
+            self.revision_button.configure(state='disabled' if busy or not self.completed else 'normal')
         self.speed_box.configure(state='disabled' if busy else 'normal')
         if hasattr(self, 'voices'):
             self.voices.set_external_busy(busy)
@@ -693,14 +751,21 @@ class App(tk.Tk):
                 result = {'status': 'error', 'message': str(exc)}
             audio_paths = {}
             audio_errors = {}
+            audio_versions = {}
             for chapter in chapter_ids:
                 try:
-                    sequence_root = _sequence_root(self._runtime_root(), existing.BOOKS[name], chapter)
-                    audio_paths[chapter] = completed_audio(sequence_root, existing.BOOKS[name], chapter)
+                    runtime_root = self._runtime_root()
+                    current_root = _sequence_root(runtime_root, existing.BOOKS[name], chapter)
+                    completed_root = _sequence_root(
+                        runtime_root, existing.BOOKS[name], chapter, require_completed=True)
+                    if completed_root is None:
+                        continue
+                    audio_paths[chapter] = completed_audio(completed_root, existing.BOOKS[name], chapter)
+                    audio_versions[chapter] = completed_root.resolve() != current_root.resolve()
                 except Exception as exc:
                     audio_errors[chapter] = type(exc).__name__
             return {'preview': preview, 'result': result, 'audio_paths': audio_paths,
-                    'audio_errors': audio_errors}
+                    'audio_errors': audio_errors, 'audio_versions': audio_versions}
 
         self.task_tree.delete(*self.task_tree.get_children())
         first, last = self.selection.chapters.index(start), self.selection.chapters.index(end)
@@ -852,16 +917,20 @@ class App(tk.Tk):
         view.insert('1.0', json.dumps(data, ensure_ascii=False, indent=2, default=str))
         view.configure(state='disabled')
 
-    def _refresh_task_rows(self, preview, result, audio_paths, audio_errors=None):
+    def _refresh_task_rows(self, preview, result, audio_paths, audio_errors=None, audio_versions=None):
         for item in self.task_tree.get_children():
             self.task_tree.delete(item)
         book = preview['book_id']
         self.completed = dict(audio_paths)
+        audio_versions = audio_versions or {}
         for chapter in self.selection.chapters[
                 self.selection.chapters.index(preview['start']):self.selection.chapters.index(preview['end']) + 1]:
             try:
                 path = self.completed[chapter]
-                state, audio_label = '已完成 · 回执与 WAV 哈希通过', str(path)
+                is_historical = audio_versions.get(chapter, False)
+                state = ('历史已完成版本 · 回执与 WAV 哈希通过' if is_historical
+                         else '已完成 · 回执与 WAV 哈希通过')
+                audio_label = ('历史已完成版本 · ' if is_historical else '') + str(path)
             except KeyError:
                 if chapter in (audio_errors or {}):
                     state, audio_label = '存储定位或回执核验失败', '无可播放的已验证音频'
@@ -874,6 +943,7 @@ class App(tk.Tk):
         else:
             self.task_info.set(f'任务返回状态：{status or "需查看高级详情"}；仅验证并列出已有完成回执。')
         self.play_button.configure(state='normal' if self.completed else 'disabled')
+        self.revision_button.configure(state='normal' if self.completed else 'disabled')
         self.active_range = None
 
     def _refresh_inflight(self):
@@ -905,6 +975,15 @@ class App(tk.Tk):
                 except (OSError, ValueError, TypeError):
                     break
             audio_label = '渲染完成后将在结束时核验 WAV 哈希' if state == labels['render'] else '尚无已验证音频'
+            try:
+                complete_root = _sequence_root(
+                    self._runtime_root(), book, chapter, require_completed=True)
+                if complete_root is not None:
+                    complete_audio = completed_audio(complete_root, book, chapter)
+                    historical = complete_root.resolve() != sequence_root.resolve()
+                    audio_label = ('历史已完成版本 · ' if historical else '已验证完成音频 · ') + str(complete_audio)
+            except Exception as exc:
+                audio_label = '已完成音频核验失败：' + type(exc).__name__
             if self.task_tree.exists(chapter):
                 self.task_tree.item(chapter, values=(chapter, state, audio_label))
 
@@ -919,7 +998,10 @@ class App(tk.Tk):
         chapter = selection[0]
         book = existing.BOOKS[self.book.get()]
         try:
-            root = _sequence_root(self._runtime_root(), book, chapter)
+            root = _sequence_root(self._runtime_root(), book, chapter, require_completed=True)
+            if root is None:
+                self.status.set('当前书籍/章节没有与索引和原文一致的已验证完成音频。')
+                return
         except Exception as exc:
             self.status.set(f'章节任务目录校验失败：{type(exc).__name__}；不会播放旧目录。')
             return
@@ -933,6 +1015,12 @@ class App(tk.Tk):
 
         def prepare_playback():
             path = completed_audio(root, book, chapter)
+            revision = self._revision_api()
+            if revision is not None:
+                context = revision.get_context(self._runtime_root(), book, chapter)
+                adopted = workbench_audio_revision.resolve_adopted(context)
+                if adopted is not None:
+                    path = Path(adopted['chapter_wav'])
             if callable(getattr(self.player, 'prepare', None)):
                 prepared = self.player.prepare(path, speed)
             elif speed == 1.0 and callable(self.player):
@@ -948,6 +1036,123 @@ class App(tk.Tk):
         self._set_playback_state(True)
         self._run('play', '正在重新核验章节回执与音频哈希…',
                   prepare_playback)
+
+    @staticmethod
+    def _revision_api():
+        try:
+            import chapter_revision_runtime as adapter
+        except ModuleNotFoundError as exc:
+            if exc.name == 'chapter_revision_runtime':
+                return None
+            raise
+        return adapter
+
+    def open_audio_revision_dialog(self):
+        selected = self.task_tree.selection()
+        if not selected or selected[0] not in self.completed:
+            self.status.set('请选择已有回执核验音频的章节。')
+            return
+        chapter = selected[0]
+        book = existing.BOOKS[self.book.get()]
+        try:
+            adapter = self._revision_api()
+            if adapter is None:
+                raise RuntimeError('段落修订运行时尚未接入。')
+            context = adapter.get_context(self._runtime_root(), book, chapter)
+            paragraphs = workbench_audio_revision.list_paragraphs(context)
+        except Exception as exc:
+            self.status.set(f'读取可修订段落失败：{exc}')
+            return
+        window = tk.Toplevel(self)
+        window.title(f'段落音频修订：{chapter}')
+        window.geometry('760x560')
+        ttk.Label(window, text='选择原始段落并填写本机合成指令。原分析和原始章节音频保持不变。',
+                  wraplength=720).pack(anchor='w', padx=12, pady=(12, 6))
+        choices = [f"{p['index'] + 1}. {p['speaker_id']} · {p['text'][:72]}" for p in paragraphs]
+        choice = tk.StringVar(value=choices[0] if choices else '')
+        combo = ttk.Combobox(window, textvariable=choice, values=choices, state='readonly')
+        combo.pack(fill='x', padx=12)
+        preview = tk.Text(window, wrap='word', height=7)
+        preview.pack(fill='both', expand=True, padx=12, pady=8)
+        preview.configure(state='disabled')
+        selected_paragraph = {'value': paragraphs[0] if paragraphs else None}
+
+        def show_paragraph(_event=None):
+            idx = choices.index(choice.get()) if choice.get() in choices else -1
+            selected_paragraph['value'] = paragraphs[idx] if idx >= 0 else None
+            preview.configure(state='normal'); preview.delete('1.0', 'end')
+            if selected_paragraph['value']:
+                preview.insert('1.0', selected_paragraph['value']['text'])
+            preview.configure(state='disabled')
+        combo.bind('<<ComboboxSelected>>', show_paragraph)
+        show_paragraph()
+        ttk.Label(window, text='朗读指令（1–500 字符）').pack(anchor='w', padx=12)
+        instruction = tk.Entry(window)
+        instruction.pack(fill='x', padx=12, pady=(3, 8))
+        revision_status = tk.StringVar(value='尚未生成修订候选。')
+        ttk.Label(window, textvariable=revision_status, wraplength=720).pack(anchor='w', padx=12)
+        controls = ttk.Frame(window); controls.pack(fill='x', padx=12, pady=10)
+
+        def generate_candidate():
+            paragraph = selected_paragraph['value']
+            hint = instruction.get()
+            if paragraph is None:
+                revision_status.set('请选择段落。'); return
+            def run():
+                fresh = adapter.get_context(self._runtime_root(), book, chapter)
+                return workbench_audio_revision.generate(
+                    fresh, paragraph['id'], hint, adapter.render_revision)
+            self._revision_window = window
+            self._run('audio_revision_generate', '正在本机生成修订并重排整章（复用已验证缓存）…', run)
+            revision_status.set('已提交本机修订和整章重排；不会重复分析章节。')
+
+        def replay_candidate():
+            record = getattr(self, '_revision_candidate', None)
+            if not record:
+                revision_status.set('先生成一个修订候选。'); return
+            if (selected_paragraph['value'] is None
+                    or record.get('paragraph_id') != selected_paragraph['value']['id']
+                    or record.get('instruction') != instruction.get().strip()):
+                revision_status.set('段落或朗读指令已变化；请先重新生成候选。'); return
+            try:
+                speed = parse_speed(self.play_speed.get())
+                fresh = adapter.get_context(self._runtime_root(), book, chapter)
+                checked = workbench_audio_revision.verify_candidate(
+                    fresh, record.get('revision_id'))
+                path = Path(checked['receipt']['chapter_wav'])
+                if callable(getattr(self.player, 'prepare', None)):
+                    prepared = self.player.prepare(path, speed)
+                elif speed == 1.0 and callable(self.player):
+                    prepared = path
+                else:
+                    raise RuntimeError('当前播放器不支持倍速处理。')
+                if callable(getattr(self.player, 'start', None)): self.player.start(prepared)
+                else: self.player(prepared)
+                self._set_playback_state(True)
+                revision_status.set('正在播放修订候选；确认后再点“采用”。')
+            except Exception as exc:
+                revision_status.set(f'无法播放修订候选：{exc}')
+
+        def adopt_candidate():
+            record = getattr(self, '_revision_candidate', None)
+            if not record:
+                revision_status.set('先生成一个修订候选。'); return
+            if (selected_paragraph['value'] is None
+                    or record.get('paragraph_id') != selected_paragraph['value']['id']
+                    or record.get('instruction') != instruction.get().strip()):
+                revision_status.set('段落或朗读指令已变化；请先重新生成候选。'); return
+            def run():
+                fresh = adapter.get_context(self._runtime_root(), book, chapter)
+                return workbench_audio_revision.adopt(fresh, record['revision_id'])
+            self._revision_window = window
+            self._run('audio_revision_adopt', '正在复核来源并切换当前段落修订…', run)
+            revision_status.set('正在核验并采用候选。')
+
+        ttk.Button(controls, text='生成候选', command=generate_candidate).pack(side='left')
+        ttk.Button(controls, text='试听候选', command=replay_candidate).pack(side='left', padx=8)
+        ttk.Button(controls, text='采用候选', command=adopt_candidate).pack(side='left')
+        self._revision_candidate = None
+        self._revision_status = revision_status
 
     def _stop_native_audio(self):
         try:
@@ -996,6 +1201,8 @@ class App(tk.Tk):
                         if isinstance(error, PlaybackCancelled):
                             self.status.set('播放准备已取消。')
                             continue
+                    if kind in ('audio_revision_generate', 'audio_revision_adopt') and getattr(self, '_revision_status', None) is not None:
+                        self._revision_status.set(f'段落修订失败：{error}；没有自动重试。')
                     self.status.set(f'{kind}失败：{error}；没有自动重试。')
                     error_status = getattr(error, 'status', None)
                     artifact_path = getattr(error, 'artifact_path', None)
@@ -1034,7 +1241,8 @@ class App(tk.Tk):
                                     f'画像任务返回状态：{profile_status or "未知"}；请先核对本机回执。')
                 elif kind == 'execute':
                     preview, result = value['preview'], value['result']
-                    self._refresh_task_rows(preview, result, value['audio_paths'], value.get('audio_errors'))
+                    self._refresh_task_rows(preview, result, value['audio_paths'], value.get('audio_errors'),
+                                            value.get('audio_versions'))
                     self.status.set('执行链已返回。章节分析、人物归属和音频仍需人工审核。')
                 elif kind == 'progress':
                     self.task_tree.delete(*self.task_tree.get_children())
@@ -1048,10 +1256,15 @@ class App(tk.Tk):
                             stages = row.get('completed_stages', [])
                             state = '已完成：' + '、'.join(stage_names.get(x, x) for x in stages) if stages else '尚无已验证阶段'
                             audio_label = row.get('audio_path') or '无可播放的已验证音频'
+                            if row.get('audio_version') == 'historical':
+                                audio_label = '历史已完成版本 · ' + audio_label
+                            elif row.get('audio_error'):
+                                audio_label = '已完成音频核验失败：' + row['audio_error']
                             if row.get('audio_path'):
                                 self.completed[chapter] = Path(row['audio_path'])
                         self.task_tree.insert('', 'end', iid=chapter, values=(chapter, state, audio_label))
                     self.play_button.configure(state='normal' if self.completed else 'disabled')
+                    self.revision_button.configure(state='normal' if self.completed else 'disabled')
                     self.active_range = (existing.BOOKS[self.book.get()], tuple(x['chapter_id'] for x in value))
                     self.task_info.set(f'只读检查完成：{len(value)} 章；音频仅来自已核验的渲染回执。')
                     self.status.set('章节进度已核验；未启动分析或配音。选择章节可查看人物归属原因。')
@@ -1069,6 +1282,16 @@ class App(tk.Tk):
                     if getattr(self, '_correction_info', None) is not None:
                         self._correction_info.set('已保存独立历史版本；原始画像保持只读。')
                     self.status.set('纠错说明保存完成；后续分析可读取该说明。')
+                elif kind == 'audio_revision_generate':
+                    self._revision_candidate = value
+                    if getattr(self, '_revision_status', None) is not None:
+                        self._revision_status.set(audio_revision_summary(value) + ' 试听后可选择采用。')
+                    self.status.set('段落修订候选已生成，派生整章音频已核验；原始渲染回执未更改。')
+                elif kind == 'audio_revision_adopt':
+                    self.completed[value['chapter_id']] = Path(value['chapter_wav'])
+                    if getattr(self, '_revision_status', None) is not None:
+                        self._revision_status.set('修订已采用；后续播放会先核验当前修订来源。')
+                    self.status.set('段落修订已采用，原始渲染回执保留。')
                 elif kind == 'play':
                     generation, chapter, prepared = value
                     if generation != self.playback_generation:

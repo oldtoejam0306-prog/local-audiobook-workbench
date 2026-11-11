@@ -21,25 +21,165 @@ def suggestion(description):
 
 def digest(path): return hashlib.sha256(path.read_bytes()).hexdigest()
 
+_REMOTE_COMPLETION = 'remote-completion.json'
+_TRANSFER_FILES = (('generated.wav', 'wav_sha256'), ('speaker-vector.npy', 'vector_sha256'))
+
+def _canonical(value):
+    return json.dumps(value,ensure_ascii=False,sort_keys=True,separators=(',',':'),allow_nan=False).encode('utf-8')
+
+def _safe_output_directory(directory):
+    path=Path(directory)
+    if path.is_symlink():raise ValueError('voice output directory cannot be a symlink')
+    resolved=path.resolve(strict=True)
+    if not resolved.is_dir():raise ValueError('voice output directory is invalid')
+    return resolved
+
+def _safe_child(directory,name):
+    path=directory/name
+    if path.is_symlink():raise ValueError('voice transfer output cannot be a symlink: '+name)
+    if path.resolve(strict=False).parent!=directory:raise ValueError('voice transfer output escapes candidate directory')
+    return path
+
+def _valid_remote_stage(stage):
+    if not isinstance(stage,str) or not stage or '..' in PurePosixPath(stage).parts:return False
+    root=PurePosixPath(release_config.remote_voice_root())
+    parsed=PurePosixPath(stage)
+    return (release_config.remote_path_is_within(stage,str(root)) and parsed.parent==root
+            and parsed.name.startswith('voice-experiment-'))
+
+def _write_json_exclusive(path,directory,value):
+    if path.is_symlink() or path.resolve(strict=False).parent!=directory:raise ValueError('voice receipt path is unsafe')
+    raw=_canonical(value)
+    with path.open('xb') as stream:
+        stream.write(raw);stream.flush();os.fsync(stream.fileno())
+    if path.stat().st_nlink!=1:raise ValueError('voice receipt must have one hardlink')
+    return raw
+
+def _read_remote_completion(directory):
+    directory=_safe_output_directory(directory)
+    path=_safe_child(directory,_REMOTE_COMPLETION)
+    if path.is_symlink() or not path.is_file() or path.stat().st_nlink!=1:
+        raise ValueError('remote completion marker is missing or unsafe')
+    raw=path.read_bytes()
+    try: marker=json.loads(raw.decode('utf-8'))
+    except (UnicodeDecodeError,ValueError) as exc:raise ValueError('remote completion marker JSON is invalid') from exc
+    if (not isinstance(marker,dict) or set(marker)!={'version','status','created_unix_ns','request',
+            'request_sha256','result','result_sha256'} or type(marker.get('version')) is not int
+            or marker['version']!=1 or marker.get('status')!='remote_complete'
+            or type(marker.get('created_unix_ns')) is not int or marker['created_unix_ns']<=0):
+        raise ValueError('remote completion marker schema is invalid')
+    request=marker['request'];result=marker['result']
+    if (not isinstance(request,dict) or not isinstance(request.get('description'),str)
+            or not request['description'].strip() or not isinstance(request.get('text'),str)
+            or not request['text'].strip() or type(request.get('seed')) is not int
+            or not 0<=request['seed']<2**32):
+        raise ValueError('remote completion request is invalid')
+    if (hashlib.sha256(_canonical(request)).hexdigest()!=marker.get('request_sha256')
+            or not isinstance(result,dict) or result.get('ok') is not True
+            or not _valid_remote_stage(result.get('stage'))
+            or any(not isinstance(result.get(key),str) or len(result[key])!=64
+                   or any(c not in '0123456789abcdef' for c in result[key]) for _,key in _TRANSFER_FILES)
+            or hashlib.sha256(_canonical(result)).hexdigest()!=marker.get('result_sha256')):
+        raise ValueError('remote completion result or binding is invalid')
+    return directory,path,raw,marker
+
+def save_remote_completion(directory,request,result):
+    """Persist an already verified remote success so its artifacts can be transferred later."""
+    directory=_safe_output_directory(directory)
+    marker_path=_safe_child(directory,_REMOTE_COMPLETION)
+    if marker_path.exists() or marker_path.is_symlink():raise FileExistsError('remote completion marker already exists')
+    if (not isinstance(request,dict) or not isinstance(request.get('description'),str)
+            or not request['description'].strip() or not isinstance(request.get('text'),str)
+            or not request['text'].strip() or type(request.get('seed')) is not int
+            or not 0<=request['seed']<2**32):raise ValueError('remote completion request is invalid')
+    if (not isinstance(result,dict) or result.get('ok') is not True
+            or not _valid_remote_stage(result.get('stage'))
+            or any(not isinstance(result.get(key),str) or len(result[key])!=64
+                   or any(c not in '0123456789abcdef' for c in result[key]) for _,key in _TRANSFER_FILES)):
+        raise ValueError('remote completion result or binding is invalid')
+    marker={'version':1,'status':'remote_complete','created_unix_ns':time.time_ns(),
+        'request':request,'request_sha256':hashlib.sha256(_canonical(request)).hexdigest(),
+        'result':result,'result_sha256':hashlib.sha256(_canonical(result)).hexdigest()}
+    _write_json_exclusive(marker_path,directory,marker)
+    return marker_path
+
+def _transfer_receipt(directory,marker_raw,stage,filename,expected):
+    target=_safe_child(directory,filename)
+    receipt_path=_safe_child(directory,'transfer-'+filename+'.json')
+    marker_sha=hashlib.sha256(marker_raw).hexdigest()
+    if target.exists():
+        if not target.is_file() or target.stat().st_nlink!=1 or digest(target)!=expected:
+            raise ValueError('existing transfer output hash mismatch: '+filename)
+        size=target.stat().st_size
+        if receipt_path.exists():
+            if receipt_path.is_symlink() or not receipt_path.is_file() or receipt_path.stat().st_nlink!=1:
+                raise ValueError('transfer receipt is not a single-link regular file')
+            try: receipt=json.loads(receipt_path.read_bytes())
+            except (OSError,ValueError) as exc:raise ValueError('transfer receipt is invalid: '+filename) from exc
+            if (receipt!={'version':1,'marker_sha256':marker_sha,'filename':filename,
+                          'sha256':expected,'bytes':size,'status':'verified'}):
+                raise ValueError('transfer receipt binding mismatch: '+filename)
+            return target
+        _write_json_exclusive(receipt_path,directory,{'version':1,'marker_sha256':marker_sha,
+            'filename':filename,'sha256':expected,'bytes':size,'status':'verified'})
+        return target
+    if receipt_path.exists():raise ValueError('transfer receipt exists without its output: '+filename)
+    part=_safe_child(directory,'.transfer-'+filename+'.'+uuid.uuid4().hex+'.part')
+    remote=stage+'/'+filename
+    proc=scp_from_mac(remote,part)
+    if proc.returncode:
+        raise RuntimeError('SCP failed for '+filename+' (exit '+str(proc.returncode)+'): '+(proc.stderr or '')[-500:])
+    if part.is_symlink() or not part.is_file() or part.stat().st_nlink!=1 or part.resolve(strict=True).parent!=directory:
+        raise ValueError('downloaded transfer output is missing or unsafe: '+filename)
+    if digest(part)!=expected:raise ValueError('downloaded transfer output hash mismatch: '+filename)
+    try:os.link(part,target)
+    except FileExistsError:
+        if target.is_symlink() or not target.is_file() or target.stat().st_nlink!=1 or digest(target)!=expected:
+            raise ValueError('voice transfer output appeared with a different hash: '+filename)
+    part.unlink()
+    if target.stat().st_nlink!=1:raise ValueError('voice transfer output has multiple hardlinks: '+filename)
+    size=target.stat().st_size
+    _write_json_exclusive(receipt_path,directory,{'version':1,'marker_sha256':marker_sha,
+        'filename':filename,'sha256':expected,'bytes':size,'status':'verified'})
+    return target
+
+def _verify_voice_wav(path):
+    with wave.open(str(path),'rb') as wav:
+        if wav.getnchannels()!=1 or wav.getsampwidth()!=2 or wav.getframerate()!=24000 or not wav.getnframes():
+            raise ValueError('试听文件格式无效')
+        if len(wav.readframes(wav.getnframes()))!=wav.getnframes()*2:raise ValueError('试听文件不完整')
+
+def _finish_remote_transfer(directory):
+    directory,marker_path,marker_raw,marker=_read_remote_completion(directory)
+    result=marker['result']
+    files={filename:_transfer_receipt(directory,marker_raw,result['stage'],filename,result[key])
+           for filename,key in _TRANSFER_FILES}
+    _verify_voice_wav(files['generated.wav'])
+    request=dict(marker['request'])
+    request.update(stage=result['stage'],wav_sha256=result['wav_sha256'],vector_sha256=result['vector_sha256'])
+    return request
+
+def resume_voice_transfer(directory):
+    """Resume only file transfer from a validated private remote-completion marker."""
+    return _finish_remote_transfer(directory)
+
 def invoke(description, text, directory):
-    req = {'description':description, 'text':text, 'seed':secrets.randbits(32)}
-    p = ssh_python('console_voice_mac.py', req, 1000)
-    try: result = json.loads(p.stdout.strip().splitlines()[-1])
-    except (ValueError,IndexError): raise RuntimeError('Mac 连接或执行失败：'+(p.stderr or p.stdout)[-1000:])
-    if not result.get('ok'): raise RuntimeError(result.get('error','生成失败'))
-    stage = result['stage']
-    stage_root = release_config.remote_voice_root()
-    if not release_config.remote_path_is_within(stage, stage_root) or PurePosixPath(stage).parent != stage_root or not PurePosixPath(stage).name.startswith('voice-experiment-'):
-        raise RuntimeError('返回路径无效')
-    for filename, key in [('generated.wav','wav_sha256'),('speaker-vector.npy','vector_sha256')]:
-        path=directory/filename
-        p=scp_from_mac(stage+'/'+filename,path)
-        if p.returncode or digest(path)!=result[key]: raise RuntimeError('下载或校验失败：'+filename)
-    with wave.open(str(directory/'generated.wav'),'rb') as wav:
-        if wav.getnchannels()!=1 or wav.getsampwidth()!=2 or wav.getframerate()!=24000 or not wav.getnframes(): raise RuntimeError('试听文件格式无效')
-        if len(wav.readframes(wav.getnframes())) != wav.getnframes()*2: raise RuntimeError('试听文件不完整')
-    req.update(stage=stage, wav_sha256=result['wav_sha256'], vector_sha256=result['vector_sha256'])
-    return req
+    directory=_safe_output_directory(directory)
+    marker_path=_safe_child(directory,_REMOTE_COMPLETION)
+    if marker_path.exists() or marker_path.is_symlink():
+        raise RuntimeError('已有远端完成回执；请调用 resume_voice_transfer(directory)，不会重新生成。')
+    req={'description':description,'text':text,'seed':secrets.randbits(32)}
+    p=ssh_python('console_voice_mac.py',req,1000)
+    try:result=json.loads(p.stdout.strip().splitlines()[-1])
+    except (ValueError,IndexError):raise RuntimeError('Mac 连接或执行失败：'+(p.stderr or p.stdout)[-1000:])
+    if not isinstance(result,dict) or result.get('ok') is not True:raise RuntimeError(str(result.get('error','生成失败') if isinstance(result,dict) else '生成失败')[:1000])
+    if not _valid_remote_stage(result.get('stage')):raise RuntimeError('返回路径无效')
+    for _,key in _TRANSFER_FILES:
+        value=result.get(key)
+        if not isinstance(value,str) or len(value)!=64 or any(c not in '0123456789abcdef' for c in value):
+            raise RuntimeError('远端结果哈希无效：'+key)
+    save_remote_completion(directory,req,result)
+    return _finish_remote_transfer(directory)
 
 def render_fixed(voice, text, directory):
     req=voice['request']; vector=Path(voice['directory'])/'speaker-vector.npy'

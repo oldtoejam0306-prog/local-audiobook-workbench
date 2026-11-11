@@ -238,24 +238,80 @@ def _valid_render_done(sequence_root, book_id, chapter_id, manifest, plan):
     return True
 
 
-def find_sequence_root(root, book_id, chapter_id=None):
+def _legacy_completed_sequence_root(root, book_id, chapter_id):
+    """Accept legacy audio only when its local plan and render receipt agree."""
+    sequence_root=Path(root)/'sequence'
+    plan_path=_derived_path(root,'sequence',book_id,'plan.json')
+    if not plan_path.exists():
+        return None
+    if plan_path.is_symlink():
+        raise JobStoreError('legacy sequence plan redirected')
+    plan=json.loads(plan_path.read_bytes())
+    chapters=plan.get('chapters') if isinstance(plan,dict) else None
+    if (not isinstance(plan,dict) or plan.get('version')!=1 or plan.get('book_id')!=book_id
+            or not _is_hash(plan.get('index_sha256'))
+            or not _is_hash(plan.get('voice_bindings_sha256'))
+            or plan.get('human_reviewed') is not False
+            or not isinstance(chapters,list) or not chapters):
+        raise JobStoreError('legacy sequence plan identity or schema invalid')
+    seen=set()
+    for row in chapters:
+        if (not isinstance(row,dict) or set(row)!={'id','source_sha256'}
+                or not isinstance(row.get('id'),str) or not CHAPTER.fullmatch(row['id'])
+                or not _is_hash(row.get('source_sha256')) or row['id'] in seen):
+            raise JobStoreError('legacy sequence chapter plan invalid')
+        seen.add(row['id'])
+    if chapter_id not in seen:
+        return None
+    if _valid_render_done(sequence_root,book_id,chapter_id,{},plan):
+        return str(sequence_root)
+    return None
+
+
+def find_sequence_root(root, book_id, chapter_id=None, *, require_completed=False):
     """Return the selected job's sequence root or the latest completed prior job.
 
     Returns root/sequence only when no per-book job store exists or no matching
     run has a completed render. A corrupt existing store raises and never falls
-    back to a potentially stale legacy path.
+    back to a potentially stale legacy path. With require_completed=True,
+    return only a registered, verified render matching the current job's source
+    and index identity; return None when no matching render exists.
     """
     if not isinstance(book_id,str) or not BOOK.fullmatch(book_id):
         raise JobStoreError('invalid book identity')
     if chapter_id is not None:
         _chapter_key(chapter_id)
+    if require_completed and chapter_id is None:
+        raise JobStoreError('chapter required for completed render lookup')
     root=Path(root); book_root=root/'runs'/book_id
     if not book_root.exists():
-        return str(root/'sequence')
+        return (_legacy_completed_sequence_root(root,book_id,chapter_id)
+                if require_completed else str(root/'sequence'))
     _,history,current=_read_book_registry(root,book_id)
     current_job,current_root,current_sequence,_=_load_job(root,book_id,current['job_id'],current['job_sha256'])
     plan=_plan_for_job(current_sequence,book_id,current_job)
     planned={c['id'] for c in current_job['chapters']}
+    if require_completed:
+        current_spec=next((c for c in current_job['chapters'] if c['id']==chapter_id),None)
+        if current_spec is None:
+            return None
+        expected_index=current_job['index_sha256']
+        expected_source=current_spec['source_sha256']
+        for row in reversed(history['jobs']):
+            manifest,_,sequence_root,_=_load_job(root,book_id,row['job_id'],row['job_sha256'])
+            candidate_plan=_plan_for_job(sequence_root,book_id,manifest)
+            if candidate_plan is None:
+                chapter_root=sequence_root/book_id
+                if chapter_root.exists() and any(chapter_root.glob('*/render.done.json')):
+                    raise JobStoreError('registered run has render receipts but no sequence plan')
+                continue
+            candidate=next((c for c in manifest['chapters'] if c['id']==chapter_id),None)
+            if (candidate is None or manifest['index_sha256']!=expected_index
+                    or candidate['source_sha256']!=expected_source):
+                continue
+            if _valid_render_done(sequence_root,book_id,chapter_id,manifest,candidate_plan):
+                return str(sequence_root)
+        return None
     if chapter_id is None or chapter_id in planned:
         return str(current_sequence)
     for row in reversed(history['jobs']):
@@ -303,6 +359,39 @@ def _registered_chapter_sources(root, book_id, index_sha256):
         if manifest['index_sha256']==index_sha256:
             found.update((item['id'],item['source_sha256']) for item in manifest['chapters'])
     return found
+
+
+def memory_profile_blocked(root, book, index_sha, chapter, memory_artifact):
+    """Validate a shared-memory artifact and report its profile-blocked state."""
+    root=Path(root)
+    if not isinstance(book,str) or not BOOK.fullmatch(book) or not _is_hash(index_sha):
+        raise JobStoreError('invalid memory identity')
+    if (not isinstance(chapter,dict) or not isinstance(chapter.get('id'),str)
+            or not CHAPTER.fullmatch(chapter['id']) or not _is_hash(chapter.get('source_sha256'))):
+        raise JobStoreError('invalid memory chapter source')
+    chapter={'id':chapter['id'],'source_sha256':chapter['source_sha256']}
+    if (chapter['id'],chapter['source_sha256']) not in _registered_chapter_sources(root,book,index_sha):
+        raise JobStoreError('memory source is not present in a registered job')
+    if not isinstance(memory_artifact,dict):
+        raise JobStoreError('memory artifact pointer required')
+    memory_doc=json.loads(_pointer_bytes(root,memory_artifact,label='memory'))
+    auto_pointer=memory_artifact.get('auto')
+    auto_doc=json.loads(_pointer_bytes(root,auto_pointer,label='auto'))
+    if (memory_doc.get('book_id')!=book or memory_doc.get('chapter_id')!=chapter['id']
+            or memory_doc.get('source_sha256')!=chapter['source_sha256']
+            or memory_doc.get('human_reviewed') is not False
+            or auto_doc.get('book_id')!=book or auto_doc.get('chapter_id')!=chapter['id']
+            or auto_doc.get('human_reviewed') is not False
+            or type(auto_doc.get('blocked',False)) is not bool):
+        raise JobStoreError('memory or auto artifact identity/status mismatch')
+    return auto_doc.get('blocked',False)
+
+
+def publish_shared_memory(root, book, index_sha, chapter, memory_artifact):
+    """Publish only profile-unblocked shared memory; the job artifact is retained by its caller."""
+    if memory_profile_blocked(root,book,index_sha,chapter,memory_artifact):
+        return {'skipped':True,'reason':'profile_blocked','human_reviewed':False}
+    return publish_memory(root,book,index_sha,chapter,memory_artifact)
 
 
 def publish_memory(root, book, index_sha, chapter, memory_artifact):
@@ -467,6 +556,157 @@ def _validate_current_memory(root, partition, current, book, index_sha, chapter)
             raise JobStoreError('memory immutable pointer path mismatch')
 
 
+def select_memory_version(root, book, index_sha, chapter_id, source_sha, version_id):
+    """Persist an explicit operator choice of one unblocked immutable memory version.
+
+    This selection is not a human review or character-identity approval. Its
+    receipt is invalidated whenever the source's complete version list changes.
+    """
+    root=Path(root)
+    if not isinstance(book,str) or not BOOK.fullmatch(book) or not _is_hash(index_sha):
+        raise JobStoreError('invalid memory selection identity')
+    if not isinstance(chapter_id,str) or not CHAPTER.fullmatch(chapter_id) or not _is_hash(source_sha):
+        raise JobStoreError('invalid memory selection chapter/source')
+    if not _is_hash(version_id):
+        raise JobStoreError('invalid selected memory version')
+    chapter={'id':chapter_id,'source_sha256':source_sha}
+    if (chapter_id,source_sha) not in _registered_chapter_sources(root,book,index_sha):
+        raise JobStoreError('selected memory source is not registered')
+    with _book_lock(root,book):
+        chapter_root=_memory_partition(root,book,index_sha,chapter_id)
+        chapter_current_path=chapter_root/'current.json'
+        if chapter_current_path.is_symlink() or not chapter_current_path.is_file():
+            raise JobStoreError('chapter memory current pointer missing or redirected')
+        chapter_current=json.loads(chapter_current_path.read_bytes())
+        if (chapter_current.get('book_id')!=book or chapter_current.get('index_sha256')!=index_sha
+                or chapter_current.get('chapter_id')!=chapter_id
+                or chapter_current.get('current_source_sha256')!=source_sha
+                or chapter_current.get('source_hashes')!=[source_sha]
+                or chapter_current.get('conflicts')):
+            raise MemoryConflictError('memory source is conflicted or differs from selection')
+        source_dir=_derived_path(root,'memory',book,index_sha[:20],chapter_id,source_sha[:20])
+        current_path=source_dir/'current.json'
+        if current_path.is_symlink() or not current_path.is_file():
+            raise JobStoreError('memory current pointer missing or redirected')
+        current=json.loads(current_path.read_bytes())
+        if (current.get('book_id')!=book or current.get('index_sha256')!=index_sha
+                or current.get('chapter')!=chapter or not isinstance(current.get('versions'),list)):
+            raise JobStoreError('memory current pointer identity invalid')
+        if len(current['versions'])<2 or not current.get('conflicts'):
+            raise MemoryConflictError('no divergent memory versions require selection')
+        _validate_current_memory(root,source_dir,current,book,index_sha,chapter)
+        if version_id not in current['versions']:
+            raise JobStoreError('selected memory version is not in the current version set')
+        version_dir=_derived_path(source_dir,'versions',version_id[:20])
+        record_path=version_dir/'record.json'
+        if record_path.is_symlink() or not record_path.is_file():
+            raise JobStoreError('selected memory record missing or redirected')
+        record_raw=record_path.read_bytes();record=json.loads(record_raw)
+        if record.get('version_id')!=version_id or record.get('chapter')!=chapter:
+            raise JobStoreError('selected memory record identity mismatch')
+        memory_pointer=record.get('memory');auto_pointer=record.get('auto')
+        memory_raw=_pointer_bytes(root,memory_pointer,label='selected memory')
+        auto_raw=_pointer_bytes(root,auto_pointer,label='selected auto memory')
+        if (Path(memory_pointer.get('path','')).resolve()!=(version_dir/'memory.json').resolve()
+                or Path(auto_pointer.get('path','')).resolve()!=(version_dir/'auto.json').resolve()
+                or record.get('memory',{}).get('sha256')!=_hash(memory_raw)
+                or record.get('auto',{}).get('sha256')!=_hash(auto_raw)):
+            raise JobStoreError('selected memory version pointer/hash mismatch')
+        memory_doc=json.loads(memory_raw);auto_doc=json.loads(auto_raw)
+        if (memory_doc.get('book_id')!=book or memory_doc.get('chapter_id')!=chapter_id
+                or memory_doc.get('source_sha256')!=source_sha or memory_doc.get('human_reviewed') is not False
+                or auto_doc.get('book_id')!=book or auto_doc.get('chapter_id')!=chapter_id
+                or auto_doc.get('human_reviewed') is not False or auto_doc.get('blocked') is not False):
+            raise MemoryConflictError('selected memory version is blocked or has invalid identity')
+        versions=list(current['versions'])
+        receipt={'version':1,'selection_type':'operator_selected_memory_version',
+            'book_id':book,'index_sha256':index_sha,'chapter':chapter,'source_sha256':source_sha,
+            'versions':versions,'versions_sha256':_hash(_bytes(versions)),
+            'selected_version_id':version_id,'selected_record_sha256':_hash(record_raw),
+            'selected_memory_sha256':_hash(memory_raw),'selected_auto_sha256':_hash(auto_raw),
+            'human_reviewed':False}
+        receipt_raw=_bytes(receipt);selection_id=_hash(receipt_raw)
+        selection_dir=_derived_path(root,'memory',book,index_sha[:20],chapter_id,source_sha[:20],'selections')
+        selection_dir.mkdir(parents=True,exist_ok=True)
+        selection_path=selection_dir/(selection_id+'.json')
+        _write_new(selection_path,receipt_raw)
+        pointer={'version':1,'selection_id':selection_id,'book_id':book,'index_sha256':index_sha,
+            'chapter_id':chapter_id,'source_sha256':source_sha,
+            'path':str(selection_path),'sha256':_hash(receipt_raw)}
+        _atomic_write(source_dir/'current-selection.json',_bytes(pointer))
+        return {**pointer,'selected_version_id':version_id,'human_reviewed':False}
+
+
+def _read_memory_selection(root, source_dir, current, book, index_sha, chapter):
+    pointer_path=source_dir/'current-selection.json'
+    if not pointer_path.exists() and not pointer_path.is_symlink():
+        return None
+    if pointer_path.is_symlink() or not pointer_path.is_file():
+        raise JobStoreError('memory selection pointer missing or redirected')
+    pointer=json.loads(pointer_path.read_bytes())
+    pointer_fields={'version','selection_id','book_id','index_sha256','chapter_id','source_sha256','path','sha256'}
+    if (not isinstance(pointer,dict) or set(pointer)!=pointer_fields
+            or type(pointer.get('version')) is not int or pointer.get('version')!=1
+            or not _is_hash(pointer.get('selection_id'))
+            or pointer.get('book_id')!=book or pointer.get('index_sha256')!=index_sha
+            or pointer.get('chapter_id')!=chapter['id']
+            or pointer.get('source_sha256')!=chapter['source_sha256']):
+        raise JobStoreError('memory selection pointer identity or schema invalid')
+    receipt_raw=_pointer_bytes(root,pointer,label='memory selection')
+    selection=json.loads(receipt_raw)
+    expected_path=(source_dir/'selections'/(pointer['selection_id']+'.json')).resolve()
+    if Path(pointer['path']).resolve()!=expected_path or _hash(receipt_raw)!=pointer['selection_id']:
+        raise JobStoreError('memory selection pointer path/hash mismatch')
+    receipt_fields={'version','selection_type','book_id','index_sha256','chapter','source_sha256',
+        'versions','versions_sha256','selected_version_id','selected_record_sha256',
+        'selected_memory_sha256','selected_auto_sha256','human_reviewed'}
+    if (not isinstance(selection,dict) or set(selection)!=receipt_fields
+            or type(selection.get('version')) is not int or selection.get('version')!=1
+            or selection.get('selection_type')!='operator_selected_memory_version'
+            or selection.get('book_id')!=book or selection.get('index_sha256')!=index_sha
+            or selection.get('chapter')!=chapter or selection.get('source_sha256')!=chapter['source_sha256']
+            or selection.get('human_reviewed') is not False
+            or not isinstance(selection.get('versions'),list)
+            or not _is_hash(selection.get('versions_sha256'))
+            or not _is_hash(selection.get('selected_version_id'))
+            or not _is_hash(selection.get('selected_record_sha256'))
+            or not _is_hash(selection.get('selected_memory_sha256'))
+            or not _is_hash(selection.get('selected_auto_sha256'))):
+        raise JobStoreError('memory selection receipt schema or identity invalid')
+    if (selection['versions']!=current.get('versions')
+            or selection['versions_sha256']!=_hash(_bytes(current.get('versions')))):
+        raise MemoryConflictError('operator memory selection is stale for the current version set')
+    version_id=selection['selected_version_id']
+    if version_id not in current['versions']:
+        raise JobStoreError('selected memory version is not in the current version set')
+    version_dir=_derived_path(source_dir,'versions',version_id[:20])
+    record_path=version_dir/'record.json'
+    if record_path.is_symlink() or not record_path.is_file():
+        raise JobStoreError('selected memory record missing or redirected')
+    record_raw=record_path.read_bytes();record=json.loads(record_raw)
+    if (_hash(record_raw)!=selection['selected_record_sha256']
+            or record.get('version_id')!=version_id or record.get('chapter')!=chapter):
+        raise JobStoreError('selected memory record hash or identity mismatch')
+    memory_pointer=record.get('memory');auto_pointer=record.get('auto')
+    memory_raw=_pointer_bytes(root,memory_pointer,label='selected memory')
+    auto_raw=_pointer_bytes(root,auto_pointer,label='selected auto memory')
+    if (record.get('memory',{}).get('sha256')!=selection['selected_memory_sha256']
+            or record.get('auto',{}).get('sha256')!=selection['selected_auto_sha256']
+            or _hash(memory_raw)!=selection['selected_memory_sha256']
+            or _hash(auto_raw)!=selection['selected_auto_sha256']
+            or Path(memory_pointer.get('path','')).resolve()!=(version_dir/'memory.json').resolve()
+            or Path(auto_pointer.get('path','')).resolve()!=(version_dir/'auto.json').resolve()):
+        raise JobStoreError('selected memory artifact hash or path mismatch')
+    memory_doc=json.loads(memory_raw);auto_doc=json.loads(auto_raw)
+    if (memory_doc.get('book_id')!=book or memory_doc.get('chapter_id')!=chapter['id']
+            or memory_doc.get('source_sha256')!=chapter['source_sha256']
+            or memory_doc.get('human_reviewed') is not False
+            or auto_doc.get('book_id')!=book or auto_doc.get('chapter_id')!=chapter['id']
+            or auto_doc.get('human_reviewed') is not False or auto_doc.get('blocked') is not False):
+        raise MemoryConflictError('selected memory version is blocked or has invalid identity')
+    return selection
+
+
 def prior_memories(root, book, index_sha, target_chapter):
     """Return verified sequence prior artifacts; conflicts are explicit errors."""
     root=Path(root)
@@ -526,10 +766,14 @@ def _prior_memories_locked(root,book,index_sha,target_chapter,target_key):
             raise JobStoreError('memory source directory and current pointer mismatch')
         if (cid,chapter['source_sha256']) not in registered_sources:
             raise JobStoreError('prior memory source is not registered for this book/index')
-        if current.get('conflicts'):
-            raise MemoryConflictError('same chapter/source has divergent memory versions')
         _validate_current_memory(root,source_dir,current,book,index_sha,chapter)
-        version_id=current['current_version'];version_dir=_derived_path(source_dir,'versions',version_id[:20])
+        selection=_read_memory_selection(root,source_dir,current,book,index_sha,chapter)
+        has_version_conflict=bool(current.get('conflicts')) or len(current.get('versions',[]))>1
+        if has_version_conflict and selection is None:
+            raise MemoryConflictError('same chapter/source has divergent memory versions')
+        version_id=(selection['selected_version_id'] if selection is not None
+                    else current['current_version'])
+        version_dir=_derived_path(source_dir,'versions',version_id[:20])
         record_path=version_dir/'record.json';record_raw=record_path.read_bytes();record=json.loads(record_raw)
         memory_pointer=record['memory'];auto_pointer=record['auto']
         for pointer,label,expected in ((memory_pointer,'memory','memory.json'),(auto_pointer,'auto','auto.json')):

@@ -13,6 +13,7 @@ import tempfile
 import uuid
 import wave
 from natural_pacing import split_text, gap_seconds
+import delivery_policy
 
 import isolated_chapter_voice_bridge as bridge
 
@@ -90,9 +91,17 @@ def prepare(stage_path, book_id, chapter_id, source_sha256, role_bindings):
     # punctuation when possible. Keep explicit audit for controlled hard cuts.
     merged = []
     for s in segments:
-        if set(s) != {'speaker_id', 'text'} or not isinstance(s['speaker_id'], str) or not s['speaker_id'] or not isinstance(s['text'], str) or not s['text']:
+        if (not isinstance(s, dict) or set(s)-{'speaker_id','text','delivery','instruct'}
+                or not {'speaker_id','text'}<=set(s) or not isinstance(s['speaker_id'], str)
+                or not s['speaker_id'] or not isinstance(s['text'], str) or not s['text']):
             raise ValueError('invalid segment')
-        if merged and merged[-1]['speaker_id'] == s['speaker_id']:
+        if 'delivery' in s: delivery_policy.validate_delivery(s['delivery'])
+        if 'instruct' in s: delivery_policy.validate_override(s['instruct'])
+        same_metadata = (merged and merged[-1].get('delivery') == s.get('delivery')
+                         and merged[-1].get('instruct') == s.get('instruct')
+                         and ('delivery' in merged[-1]) == ('delivery' in s)
+                         and ('instruct' in merged[-1]) == ('instruct' in s))
+        if merged and merged[-1]['speaker_id'] == s['speaker_id'] and same_metadata:
             merged[-1]['text'] += s['text']
         else:
             merged.append(dict(s))
@@ -104,7 +113,10 @@ def prepare(stage_path, book_id, chapter_id, source_sha256, role_bindings):
             previous = chunks[-1] if chunks else None
             frames, reason = gap_seconds(previous['text'] if previous else '', piece.text,
                 previous['speaker_id'] if previous else '', s['speaker_id'])
-            chunks.append({'speaker_id': s['speaker_id'], 'text': piece.text})
+            chunk={'speaker_id': s['speaker_id'], 'text': piece.text}
+            if 'delivery' in s: chunk['delivery']=s['delivery']
+            if 'instruct' in s: chunk['instruct']=s['instruct']
+            chunks.append(chunk)
             pacing.append({'gap_frames': frames, 'reason': reason,
                            'boundary': piece.boundary})
     if ''.join(s['text'] for s in chunks) != ''.join(s['text'] for s in segments):
@@ -336,6 +348,9 @@ def render(stage_path, book_id, chapter_id, source_sha256, role_bindings, output
     if render_segment is None:
         return _render_native(stage_path, document, assignments, book_id, chapter_id,
                               source_sha256, role_bindings, output_parent, native_renderer)
+    if any(segment.get('delivery', 'neutral') != 'neutral' or 'instruct' in segment
+           for chapter in document['chapters'] for segment in chapter['segments']):
+        raise ValueError('injected render_segment only supports legacy three-argument neutral rendering')
     bridge_document = {key: value for key, value in document.items() if key in ('book', 'chapters', 'pacing')}
     root, _ = bridge.render_document(bridge_document, assignments, output_parent, render_segment=render_segment)
     return verify(root, document, assignments, source_sha256)

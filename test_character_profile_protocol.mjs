@@ -10,7 +10,7 @@ import {build,run} from './real_pipeline_context_worker.mjs';
 const hash=s=>createHash('sha256').update(s,'utf8').digest('hex');
 const names=['甲','乙','丙','丁','戊'];
 test('preserves all values when only the final scope field is outside the root',()=>{
- const first={characters:[{name:'甲'}],narration_design:{description:'自然叙述'}};
+ const first={characters:[{name:'甲'}],relations:[],narration_design:{description:'自然叙述'}};
  const malformed=JSON.stringify(first)+',"scope_summary":"仅本次章节"}';
  const result=parseProfileContent(malformed);
  assert.deepEqual(result.value,{...first,scope_summary:'仅本次章节'});
@@ -93,6 +93,49 @@ test('rejects mutated source hash, wrong scope, and oversized text',()=>{
  assert.throws(()=>buildProfileRequest({...x,target_names:[names[0],names[0]]}),/invalid_profile_targets/);
  assert.doesNotThrow(()=>buildProfileRequest({...x,target_names:names.slice(0,1)}));
  const huge='你'.repeat(60001);assert.throws(()=>buildProfileRequest({...x,chapters:[{chapter_id:'c003',text:huge,text_sha256:hash(huge)}]}),/60000_codepoints/);
+});
+
+test('normalizes source-backed relationship candidates through unique canonical names and aliases',()=>{
+ const text='甲又名阿甲，沉静地回答。乙点头。';
+ const relationInput={...x,chapter_id:'c003',chapters:[{chapter_id:'c003',text,text_sha256:hash(text)}]};
+ const quote=[{chapter_id:'c003',quote:text}];
+ const parsed={scope_summary:'候选关系待审核',characters:names.slice(0,2).map(n=>person(n,text)),relations:[
+  {source:'阿甲',target:'乙',label:'同行者',status:'explicit',evidence:quote},
+  {source:'不存在的人',target:'乙',label:'朋友',status:'inferred',evidence:quote},
+  {source:'甲',target:'乙',label:'',status:'unknown',evidence:[]} ]};
+ parsed.characters[0].aliases=[{name:'阿甲',evidence:quote}];
+ const out=normalizeProfileResult(parsed,relationInput);
+ assert.deepEqual(out.relations,[{source:'甲',target:'乙',label:'同行者',status:'explicit',evidence:[{
+  chapter_id:'c003',quote:text,source_range:[0,Array.from(text).length],source_sha256:hash(text)}]}]);
+ assert.ok(out.unresolved_relations.some(r=>r.reason==='unsupported_or_ambiguous_endpoint'));
+ assert.ok(out.unresolved_relations.some(r=>r.reason==='unknown_relation_candidate'));
+});
+
+test('ambiguous alias endpoints remain unresolved and long labels are rejected',()=>{
+ const text='甲又名同名，乙也叫同名；甲和乙是朋友。';
+ const relationInput={...x,chapter_id:'c003',chapters:[{chapter_id:'c003',text,text_sha256:hash(text)}]};
+ const quote=[{chapter_id:'c003',quote:text}];
+ const parsed={scope_summary:'候选关系待审核',characters:names.slice(0,2).map(n=>person(n,text)),relations:[
+  {source:'同名',target:'乙',label:'朋友',status:'inferred',evidence:quote},
+  {source:'甲',target:'乙',label:'关系'.repeat(41),status:'explicit',evidence:quote}]};
+ parsed.characters[0].aliases=[{name:'同名',evidence:quote}];
+ parsed.characters[1].aliases=[{name:'同名',evidence:quote}];
+ const out=normalizeProfileResult(parsed,relationInput);
+ assert.equal(out.relations.length,0);
+ assert.equal(out.unresolved_relations[0].reason,'unsupported_or_ambiguous_endpoint');
+ assert.ok(out.issues.some(i=>i.reason==='relation_label_too_long'));
+});
+
+test('co-occurrence alias evidence cannot establish a relationship endpoint identity',()=>{
+ const text='甲在门口遇见阿甲，乙随后到来。';
+ const relationInput={...x,chapter_id:'c003',chapters:[{chapter_id:'c003',text,text_sha256:hash(text)}]};
+ const quote=[{chapter_id:'c003',quote:text}];
+ const parsed={scope_summary:'候选关系待审核',characters:names.slice(0,2).map(n=>person(n,text)),relations:[
+  {source:'阿甲',target:'乙',label:'同伴',status:'explicit',evidence:quote}]};
+ parsed.characters[0].aliases=[{name:'阿甲',evidence:quote}];
+ const out=normalizeProfileResult(parsed,relationInput);
+ assert.equal(out.relations.length,0);
+ assert.equal(out.unresolved_relations[0].reason,'unsupported_or_ambiguous_endpoint');
 });
 
 test('worker dispatches profile mode once into its independent receipt namespace',async()=>{

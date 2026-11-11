@@ -82,7 +82,7 @@ def run_experiment(root,legacy_root,book,chapter_ids,voices,role_bindings,verify
    return original_analyze(chapter,expanded_prior(chapter,prior),artifacts)
   def shared_memory(chapter,prior,artifacts):
    result=original_memory(chapter,expanded_prior(chapter,prior),artifacts)
-   if result.get('status')=='ok':store.publish_memory(shared,book,digest,
+   if result.get('status')=='ok':store.publish_shared_memory(shared,book,digest,
      {'id':chapter['id'],'source_sha256':chapter['source_sha256']},result['artifact'])
    return result
   stage_callbacks.update(analyze=shared_analyze,memory=shared_memory)

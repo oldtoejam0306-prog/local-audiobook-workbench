@@ -1,7 +1,35 @@
 import copy
+import hashlib
+import json
 import unittest
 
-from auto_voice_planner import plan_voice_designs
+from auto_voice_planner import plan_voice_designs, plans_from_character_profiles
+
+
+def character_profile_document(alias_evidence, text='阿舟站在一旁。'):
+    source_sha = hashlib.sha256(text.encode('utf-8')).hexdigest()
+    anchor = {'chapter_id': 'c001', 'quote': text, 'source_range': [0, len(text)],
+              'source_sha256': source_sha}
+    profile = {'name': '林舟', 'name_evidence': [anchor], 'aliases': [],
+        'identity': {'value': '', 'status': 'unknown', 'evidence': []},
+        'gender': {'value': '', 'status': 'unknown', 'evidence': []},
+        'age': {'value': '', 'status': 'unknown', 'evidence': []},
+        'personality': [], 'behavior': [], 'speech_style': [],
+        'voice_design': {'description': '中性、清晰的虚构声音', 'rationale': '仅为声音创作选择',
+            'creative_choices': ['保持清楚咬字'], 'status': 'candidate_needs_review',
+            'mode': 'character_voice'}, 'uncertainties': []}
+    if alias_evidence is not None:
+        profile['aliases'] = [{'name': '阿舟', 'evidence': alias_evidence}]
+    return {'version': 1, 'mode': 'character_profiles_v1', 'book_id': 'book-demo',
+        'source': {'chapters': [{'chapter_id': 'c001', 'text_sha256': source_sha,
+                                 'codepoint_length': len(text)}]},
+        'characters': [profile], 'scope_summary': 'test', 'issues': [],
+        'human_reviewed': False}
+
+
+def profile_digest(profile):
+    return hashlib.sha256(json.dumps(profile, ensure_ascii=False, sort_keys=True,
+        separators=(',', ':'), allow_nan=False).encode('utf-8')).hexdigest()
 
 
 class AutoVoicePlannerTests(unittest.TestCase):
@@ -88,6 +116,45 @@ class AutoVoicePlannerTests(unittest.TestCase):
         self.assertEqual((self.memory, self.rows), original)
         with self.assertRaises(ValueError):
             plan_voice_designs(self.memory, self.rows + [self.rows[0]])
+
+    def test_character_profile_plan_audits_alias_quote_without_both_names(self):
+        document = character_profile_document([{'chapter_id': 'c001',
+            'quote': '阿舟站在一旁。', 'source_range': [0, 7],
+            'source_sha256': hashlib.sha256('阿舟站在一旁。'.encode()).hexdigest()}])
+        original = copy.deepcopy(document)
+        profile = document['characters'][0]
+        result = plans_from_character_profiles(document)
+        self.assertEqual(document, original)
+        self.assertEqual(1, len(result['plans']))
+        self.assertEqual([], result['plans'][0]['aliases'])
+        self.assertEqual(profile_digest(profile), result['plans'][0]['profile_sha256'])
+        self.assertEqual([{'canonical': '林舟', 'candidate': '阿舟',
+            'evidence': profile['aliases'][0]['evidence'],
+            'reason': 'canonical_and_alias_not_co_located'}], result['unresolved_aliases'])
+
+    def test_character_profile_plan_audits_alias_with_untrusted_source_hash(self):
+        text = '林舟又名阿舟。'
+        document = character_profile_document([{'chapter_id': 'c001', 'quote': text,
+            'source_range': [0, len(text)], 'source_sha256': 'f' * 64}], text=text)
+        original = copy.deepcopy(document)
+        result = plans_from_character_profiles(document)
+        self.assertEqual(document, original)
+        self.assertEqual(1, len(result['plans']))
+        self.assertEqual([], result['plans'][0]['aliases'])
+        self.assertEqual(profile_digest(document['characters'][0]), result['plans'][0]['profile_sha256'])
+        self.assertEqual('invalid_or_untrusted_source_evidence', result['unresolved_aliases'][0]['reason'])
+        self.assertEqual('阿舟', result['unresolved_aliases'][0]['candidate'])
+
+    def test_character_profile_plan_keeps_valid_source_bound_alias(self):
+        text = '林舟又名阿舟。'
+        document = character_profile_document([{'chapter_id': 'c001', 'quote': text,
+            'source_range': [0, len(text)],
+            'source_sha256': hashlib.sha256(text.encode()).hexdigest()}], text=text)
+        original = copy.deepcopy(document)
+        result = plans_from_character_profiles(document)
+        self.assertEqual(document, original)
+        self.assertEqual([], result['unresolved_aliases'])
+        self.assertEqual(['阿舟'], [x['name'] for x in result['plans'][0]['aliases']])
 
 
 if __name__ == '__main__': unittest.main()

@@ -125,6 +125,7 @@ def _read_success(batch_dir, expected_input_sha):
     intent, request_body, body, meta, usage_file = [
         json.loads(p.read_bytes()) if p.name not in ('response.body', 'request.body.json') else p.read_bytes()
         for p in required]
+    meta_raw = (receipt / 'response.meta.json').read_bytes()
     if (intent.get('input_sha256') != expected_input_sha or intent.get('purpose') != 'character_profiles_v1'
             or intent.get('request_sha256') != _hash(request_body)
             or meta.get('http_status') != 200 or meta.get('body_sha256') != _hash(body)):
@@ -143,11 +144,61 @@ def _read_success(batch_dir, expected_input_sha):
             error.usage=actual_usage
             raise error
     result_path = receipt / 'result.json'
-    if not result_path.is_file():
-        error = ProfileJobError('invalid_result', '原始usage有效，但画像结果文件缺失；不会重发', artifact_path=batch_dir)
-        error.usage = actual_usage
-        raise error
-    result = json.loads(result_path.read_bytes())
+    recovery_path = receipt / 'local-format-recovery.json'
+    recovered_path = receipt / 'result.local-format-recovered.json'
+    if recovery_path.exists():
+        recovery_helper = batch_dir / 'profile-json-recovery-source.mjs'
+        try:
+            for artifact in (recovery_path, recovery_helper, recovered_path):
+                if artifact.is_symlink() or not artifact.is_file() or artifact.stat().st_nlink != 1:
+                    raise ValueError('recovery artifact must be a single-link regular file')
+            if result_path.exists() and (result_path.is_symlink() or not result_path.is_file()
+                                         or result_path.stat().st_nlink != 1):
+                raise ValueError('original result must be a single-link regular file')
+            recovery_raw = recovery_path.read_bytes()
+            recovery = json.loads(recovery_raw)
+            helper_raw = recovery_helper.read_bytes()
+            recovered_raw = recovered_path.read_bytes()
+            original_sha = _hash(result_path.read_bytes()) if result_path.is_file() else None
+            repair = recovery.get('repair') if isinstance(recovery, dict) else None
+            removals = repair.get('removals') if isinstance(repair, dict) else None
+            repair_rules = {
+                'remove_premature_name_evidence_closers': ('}]', {
+                    'aliases', 'identity', 'gender', 'age', 'personality', 'behavior',
+                    'speech_style', 'voice_design', 'uncertainties'}, 8),
+                'remove_premature_scope_summary_root_closer': ('}', {'scope_summary'}, 1),
+            }
+            rule = repair_rules.get(repair.get('kind')) if isinstance(repair, dict) else None
+            if (not isinstance(recovery, dict) or set(recovery) != {'version', 'kind', 'input_sha256',
+                        'response_body_sha256', 'response_meta_sha256', 'original_result_sha256',
+                        'protocol_source_sha256', 'helper_source_sha256', 'recovered_result_sha256',
+                        'response_id', 'usage', 'repair'}
+                    or recovery.get('version') != 1 or recovery.get('kind') != 'offline_profile_json_boundary_recovery'
+                    or recovery.get('input_sha256') != expected_input_sha or recovery.get('response_body_sha256') != _hash(body)
+                    or recovery.get('response_meta_sha256') != _hash(meta_raw)
+                    or recovery.get('original_result_sha256') != original_sha
+                    or recovery.get('protocol_source_sha256') != intent.get('protocol_source_sha256')
+                    or recovery.get('helper_source_sha256') != _hash(helper_raw)
+                    or recovery.get('recovered_result_sha256') != _hash(recovered_raw)
+                    or recovery.get('response_id') != provider.get('id') or recovery.get('usage') != actual_usage
+                    or rule is None
+                    or not isinstance(removals, list) or not (1 <= len(removals) <= rule[2])
+                    or any(not isinstance(row, dict) or row.get('removed') != rule[0]
+                        or type(row.get('character_offset')) is not int or row['character_offset'] < 0
+                        or row.get('next_field') not in rule[1] for row in removals)
+                    or [row['character_offset'] for row in removals] != sorted(set(row['character_offset'] for row in removals))):
+                raise ValueError('recovery binding or schema mismatch')
+            result = json.loads(recovered_raw)
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            error = ProfileJobError('invalid_result', '离线画像格式修复回执无法核实；不会重发', artifact_path=recovery_path)
+            error.usage = actual_usage
+            raise error from exc
+    else:
+        if not result_path.is_file():
+            error = ProfileJobError('invalid_result', '原始usage有效，但画像结果文件缺失；不会重发', artifact_path=result_path)
+            error.usage = actual_usage
+            raise error
+        result = json.loads(result_path.read_bytes())
     if (result.get('status') != 'needs_review' or result.get('retry_allowed') is not False
             or not isinstance(result.get('result'), dict)
             or result['result'].get('mode') != 'character_profiles_v1'):
@@ -159,6 +210,42 @@ def _read_success(batch_dir, expected_input_sha):
         error.usage = actual_usage
         raise error
     return result, actual_usage, receipt
+
+
+def _read_or_recover_success(batch_dir, expected_input_sha):
+    """Recover recognized JSON syntax locally after a verified, known-usage reply."""
+    try:
+        return _read_success(batch_dir, expected_input_sha)
+    except ProfileJobError as original:
+        receipt = batch_dir / 'receipt' / 'character_profiles_v1'
+        if (original.status != 'invalid_result' or not isinstance(getattr(original, 'usage', None), dict)
+                or (receipt / 'local-format-recovery.json').exists()):
+            raise
+        try:
+            provider = json.loads((receipt / 'response.body').read_bytes())
+            content = provider['choices'][0]['message']['content']
+            if not isinstance(content, str):
+                raise original
+        except (OSError, ValueError, KeyError, IndexError, TypeError):
+            raise original
+        try:
+            json.loads(content)
+        except json.JSONDecodeError:
+            pass
+        else:
+            raise original
+        helper = Path(__file__).with_name('profile_json_recovery.mjs')
+        if helper.is_symlink() or not helper.is_file():
+            raise original
+        try:
+            completed = subprocess.run([shutil.which('node') or 'node', str(helper),
+                '--recover', str(batch_dir)], capture_output=True, text=True, encoding='utf-8',
+                timeout=30, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+        except (OSError, subprocess.SubprocessError):
+            raise original
+        if completed.returncode:
+            raise original
+        return _read_success(batch_dir, expected_input_sha)
 
 
 def _merge_evidence(left, right):
@@ -359,6 +446,52 @@ def _merge_registry(existing, normalized, batch_info):
                     'kind': 'alias', 'evidence': alias.get('evidence', [])})
     doc['alias_conflicts'] = [{'alias': alias, 'candidates': rows, 'status': 'ambiguous_no_identity_merge'}
         for alias, rows in sorted(aliases.items()) if len({r['name'] for r in rows}) > 1]
+    relations = list(doc.get('relations', [])) if isinstance(doc.get('relations', []), list) else []
+    unresolved_relations = list(doc.get('unresolved_relations', [])) if isinstance(doc.get('unresolved_relations', []), list) else []
+    for candidate in normalized.get('relations', []):
+        if not isinstance(candidate, dict):
+            unresolved_relations.append({'candidate': candidate, 'reason': 'invalid_relation_candidate'})
+            continue
+        row = dict(candidate)
+        evidence = row.get('evidence') if isinstance(row.get('evidence'), list) else []
+        valid_evidence = [ref for ref in evidence if isinstance(ref, dict)
+            and ref.get('chapter_id') in trusted_source_hashes
+            and ref.get('source_sha256') in trusted_source_hashes[ref.get('chapter_id')]
+            and isinstance(ref.get('quote'), str) and ref.get('quote')]
+        if len(valid_evidence) != len(evidence) or not evidence:
+            unresolved_relations.append({'candidate': row, 'reason': 'relation_evidence_untrusted_or_missing'})
+            continue
+        endpoints = []
+        for field in ('source', 'target'):
+            name = row.get(field)
+            resolution, matches, _owners = resolve_existing_name(name) if isinstance(name, str) else ('new', [], [])
+            if resolution == 'exact' and len(matches) == 1:
+                endpoints.append(matches[0]['name'])
+            elif resolution == 'proven_alias' and len(matches) == 1:
+                endpoints.append(matches[0]['name'])
+            else:
+                endpoints.append(None)
+        if not endpoints[0] or not endpoints[1] or endpoints[0] == endpoints[1]:
+            unresolved_relations.append({'candidate': row, 'reason': 'relation_endpoint_missing_ambiguous_or_same'})
+            continue
+        if (not isinstance(row.get('label'), str) or not row['label'].strip() or len(row['label']) > 80
+                or row.get('status') not in ('explicit', 'inferred')):
+            unresolved_relations.append({'candidate': row, 'reason': 'relation_label_or_status_invalid'})
+            continue
+        row['source'], row['target'] = endpoints
+        row['evidence'] = valid_evidence
+        prior = next((item for item in relations if isinstance(item, dict)
+            and item.get('source') == row['source'] and item.get('target') == row['target']
+            and item.get('label') == row['label'] and item.get('status') == row['status']), None)
+        if prior is None:
+            relations.append(row)
+        else:
+            prior['evidence'] = _merge_evidence(prior.get('evidence', []), valid_evidence)
+    for candidate in normalized.get('unresolved_relations', []):
+        if isinstance(candidate, dict):
+            unresolved_relations.append(candidate)
+    doc['relations'] = unique_rows(relations)
+    doc['unresolved_relations'] = unique_rows(unresolved_relations)
     jobs = list(doc.get('profile_jobs', []))
     if _digest(batch_info) not in {_digest(x) for x in jobs if isinstance(x, dict)}:
         jobs.append(batch_info)
@@ -403,17 +536,24 @@ def _prepare_batches(book_id, chapter_ids, index_sha256, index_request):
     return batches, {p['chapter_id']: p for p in payloads}
 
 
-def _run_batch(book_id, chapters, root, dispatcher, preflight, *, skip_preflight=False):
+def _run_batch(book_id, chapters, root, dispatcher, preflight, *, skip_preflight=False,
+               target_names=None):
+    targeted_names = sorted(set(target_names or []))
+    discovery = not bool(targeted_names)
     last = chapters[-1]['chapter_id']
     request = {'mode': 'character_profiles_v1', 'book_id': book_id, 'chapter_id': last,
-        'discover_characters': True, 'target_names': [],
+        'discover_characters': discovery, 'target_names': [] if discovery else targeted_names,
         'chapters': [{'chapter_id': x['chapter_id'], 'text': x['text'], 'text_sha256': x['text_sha256']} for x in chapters]}
     raw_input = workflow._bytes(request); input_sha = _hash(raw_input)
-    source_digest = _digest({'book_id': book_id, 'chapters': [(c['chapter_id'], c['text_sha256']) for c in chapters]})
+    source_scope = {'book_id': book_id, 'chapters': [(c['chapter_id'], c['text_sha256']) for c in chapters]}
+    # Keep the legacy discovery cache identity byte-for-byte stable. Targeted
+    # enrichments have their own purpose and names so they cannot collide.
+    source_digest = (_digest(source_scope) if discovery else
+        _digest({'purpose': 'targeted_character_profiles_v1', **source_scope, 'target_names': targeted_names}))
     batch_dir = Path(root) / 'profile-tasks' / book_id / source_digest
     if batch_dir.exists():
         try:
-            result, usage, receipt = _read_success(batch_dir, input_sha)
+            result, usage, receipt = _read_or_recover_success(batch_dir, input_sha)
             return result, usage, receipt, batch_dir, source_digest, True
         except ProfileJobError:
             raise
@@ -446,7 +586,7 @@ def _run_batch(book_id, chapters, root, dispatcher, preflight, *, skip_preflight
         raise ProfileJobError('usage_unknown', '画像批次失败或状态未知；不会自动重发', artifact_path=batch_dir) from exc
     if not isinstance(dispatched, dict) or dispatched.get('status') not in ('needs_review', 'complete', 'invalid_or_usage_unknown'):
         raise ProfileJobError('usage_unknown', '画像worker未确认完成；不会自动重发', artifact_path=batch_dir)
-    result, usage, receipt = _read_success(batch_dir, input_sha)
+    result, usage, receipt = _read_or_recover_success(batch_dir, input_sha)
     normalized = result['result']
     expected = [{'chapter_id': c['chapter_id'], 'text_sha256': c['text_sha256']} for c in chapters]
     actual = normalized.get('source', {}).get('chapters')
@@ -478,7 +618,9 @@ def _merge_and_commit(root, book_id, result, usage, receipt, batch_dir, source_d
         profile_result = result['result']
         batch_info = {'batch_source_sha256': source_digest, 'input_sha256': _hash((batch_dir/'input.json').read_bytes()),
             'receipt_dir': str(receipt), 'result_path': str(receipt/'result.json'),
-            'usage': usage, 'status': 'needs_review', 'human_reviewed': False}
+            'usage': usage, 'status': 'needs_review', 'human_reviewed': False,
+            'chapters': [{'chapter_id': row['chapter_id'], 'text_sha256': row['text_sha256']}
+                for row in profile_result.get('source', {}).get('chapters', []) if isinstance(row, dict)]}
         document = _merge_registry(existing, profile_result, batch_info)
         current, version, version_sha = _commit_registry(root, book_id, document)
         return current, version, version_sha
@@ -552,22 +694,68 @@ def ensure_profiles_for_chapter(payload, *, root, dispatcher=None, preflight=Non
     text = payload.get('text')
     if not isinstance(text, str) or not text.strip():
         raise ValueError('chapter text missing')
+    required = payload.get('profile_required_names', [])
+    if (not isinstance(required, list) or len(required) > 100
+            or any(not isinstance(name, str) or not name.strip() or len(name) > 80
+                   or name not in text for name in required)):
+        raise ValueError('invalid required profile names')
+    required = sorted(set(required))
     source_sha = _hash(text.encode('utf-8'))
     registry = _existing_registry(root, book_id)
+    missing = _missing_required_profiles(registry, required) if registry and required else list(required)
     if registry:
         sources = registry.get('source', {}).get('chapters', [])
-        if any(c.get('chapter_id') == chapter_id and c.get('text_sha256') == source_sha for c in sources if isinstance(c, dict)):
+        chapter_current = any(c.get('chapter_id') == chapter_id and c.get('text_sha256') == source_sha
+                              for c in sources if isinstance(c, dict))
+        if chapter_current and not missing:
             return {'status': 'already_current', 'book_id': book_id,
                     'current_path': str(Path(root)/'character-profiles'/book_id/'current.json'),
                     'human_reviewed': False}
     chapter = {'chapter_id': chapter_id, 'text': text, 'text_sha256': source_sha}
     # Internal one-chapter path avoids rereading the index in AutoBridge; caller
     # has already verified this payload. It still uses the identical receipt flow.
-    book_result = _run_payload_batches(book_id, [[chapter]], root, dispatcher, preflight)
+    book_result = _run_payload_batches(book_id, [[chapter]], root, dispatcher, preflight,
+                                       target_names=missing if required else None)
     return book_result
 
 
-def _run_payload_batches(book_id, batches, root, dispatcher=None, preflight=None):
+def _missing_required_profiles(registry, required_names):
+    """Return requested labels absent from canonical or proven unique aliases."""
+    if not required_names:
+        return []
+    sources = registry.get('source', {}).get('chapters', [])
+    trusted = {}
+    for row in sources if isinstance(sources, list) else []:
+        if isinstance(row, dict) and isinstance(row.get('chapter_id'), str):
+            trusted.setdefault(row['chapter_id'], set()).add(row.get('text_sha256'))
+    profiles = [p for p in registry.get('characters', []) if isinstance(p, dict)
+                and isinstance(p.get('name'), str)]
+    labels = {}
+    for profile in profiles:
+        labels.setdefault(profile['name'], []).append(('canonical', profile, True))
+        for alias in profile.get('aliases', []) if isinstance(profile.get('aliases'), list) else []:
+            if not isinstance(alias, dict) or not isinstance(alias.get('name'), str):
+                continue
+            proven = any(isinstance(ref, dict) and isinstance(ref.get('chapter_id'), str)
+                and ref.get('source_sha256') in trusted.get(ref.get('chapter_id'), set())
+                and isinstance(ref.get('quote'), str)
+                and _identity_linked(ref['quote'], profile['name'], alias['name'])
+                for ref in alias.get('evidence', []) if isinstance(alias.get('evidence'), list))
+            labels.setdefault(alias['name'], []).append(('alias', profile, proven))
+    missing = []
+    for name in required_names:
+        owners = labels.get(name, [])
+        owner_names = {row[1]['name'] for row in owners}
+        canonical = [row for row in owners if row[0] == 'canonical']
+        proven_aliases = [row for row in owners if row[0] == 'alias' and row[2]]
+        ambiguous = len(owner_names) > 1 or len(canonical) > 1
+        if not ambiguous and (canonical or len(proven_aliases) == 1):
+            continue
+        missing.append(name)
+    return missing
+
+
+def _run_payload_batches(book_id, batches, root, dispatcher=None, preflight=None, *, target_names=None):
     use_default = dispatcher is None
     custom_preflight = preflight is not None
     dispatcher = dispatcher or _default_dispatcher
@@ -578,7 +766,8 @@ def _run_payload_batches(book_id, batches, root, dispatcher=None, preflight=None
     for chapters in batches:
         try:
             result, usage, receipt, batch_dir, source_digest, reused = _run_batch(book_id, chapters, root,
-                dispatcher, preflight, skip_preflight=(not use_default and not custom_preflight))
+                dispatcher, preflight, skip_preflight=(not use_default and not custom_preflight),
+                target_names=target_names)
             current_path,version_path,version_sha=_merge_and_commit(root,book_id,result,usage,receipt,batch_dir,source_digest,reused)
             usage_total['prompt_tokens']+=usage['prompt_tokens'];usage_total['completion_tokens']+=usage['completion_tokens']
             usage_total['known_usage_batches']+=1

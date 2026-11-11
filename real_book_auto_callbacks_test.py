@@ -22,6 +22,71 @@ def profile_doc(book,chapter,name,quote,alias=None):
    'voice_design':{'description':'沉稳、克制的说话节奏','rationale':'画像明确记载沉稳性格','creative_choices':['语速平稳','重音克制'],'status':'candidate_needs_review'},'uncertainties':[]}],
   'scope_summary':'synthetic test profile','issues':[],'human_reviewed':False}
 class Tests(unittest.TestCase):
+ def test_missing_named_profiles_are_requested_even_when_chapter_source_is_current(self):
+  with tempfile.TemporaryDirectory() as tmp:
+   root=Path(tmp);book='book-'+'7'*20;cid='c005'
+   text='看门大妈守在门口。柳恺问了一句。林舟回答。';source=h(text.encode())
+   chapter={'book_id':book,'id':cid,'source_sha256':source}
+   registry=root/'character-profiles'/book/'current.json';registry.parent.mkdir(parents=True)
+   current=profile_doc(book,cid,'林舟',text)
+   registry.write_text(json.dumps(current,ensure_ascii=False),encoding='utf-8')
+   stable_id='e'+'1'*24
+   prior_auto=base._save(root/'prior-auto.json',{'book_id':book,'entities':[
+    {'entity_id':stable_id,'name':'柳恺','labels':['柳恺']}]})
+   prior=[{'artifacts':{'memory':{'auto':prior_auto}}}]
+   old_record=voice(root/'voices'/book/stable_id,book+'\0'+stable_id)
+   old_binding={'console_key':book+'\0'+stable_id,'record':old_record}
+   ac.auto.select_voice(root/'voices',book,stable_id,old_binding,basis='existing selected voice')
+   calls=[]
+   def ensure(payload,*,root,dispatcher=None):
+    calls.append((payload,root,dispatcher))
+    self.assertEqual(sorted(['看门大妈','柳恺']),payload['profile_required_names'])
+    doc=json.loads(registry.read_text(encoding='utf-8'))
+    doc['characters'].extend([
+     profile_doc(book,cid,'看门大妈',text)['characters'][0],
+     profile_doc(book,cid,'柳恺',text)['characters'][0]])
+    registry.write_text(json.dumps(doc,ensure_ascii=False),encoding='utf-8')
+    return {'status':'needs_review'}
+   names=['林舟','看门大妈','柳恺']
+   memory=base._save(root/'memory.json',{'characters':[
+    {'name':name,'aliases':[],'evidence':text} for name in names]})
+   payload={'book_id':book,'chapter_id':cid,'text':text,'blocks':[]}
+   input_path=root/'input.json';input_path.write_bytes(base.workflow._bytes(payload));input_sha=h(input_path.read_bytes())
+   generated=[]
+   def generate(description,directory):
+    generated.append((description,directory))
+    return voice(directory/'asset','temporary\0generated')
+   narrator_record=voice(root/'narrator',book+'\0narrator')
+   bridge=ac.AutoBridge(root/'data',None,None,{},voice_root=root/'voices',
+    narrator={'console_key':book+'\0narrator','record':narrator_record},
+    auto_renderer=lambda *x:None,auto_verify=lambda *x:True,generator=generate,
+    profile_ensurer=ensure,profile_dispatcher='stub')
+   with patch.object(base.Bridge,'memory',return_value={'artifact':memory}):
+    result=bridge.memory({**chapter,'voice_bindings_sha256':'0'*64},prior,
+     {'analyze':{'input_path':str(input_path),'input_sha256':input_sha}})
+   self.assertEqual(1,len(calls));self.assertEqual(root,calls[0][1]);self.assertEqual('stub',calls[0][2])
+   self.assertNotIn('profile_required_names',json.loads(input_path.read_bytes()))
+   self.assertEqual(input_sha,h(input_path.read_bytes()))
+   self.assertFalse(result['artifact']['profile_blocked'])
+   saved=base._read(**result['artifact']['auto'])
+   pin=result['artifact']['profile_registry'];version=Path(pin['path'])
+   self.assertEqual(registry.parent/'versions',version.parent)
+   self.assertEqual(pin['sha256'],h(version.read_bytes()))
+   pinned_doc=json.loads(version.read_bytes())
+   self.assertTrue({'林舟','柳恺','看门大妈'} <= {item['name'] for item in pinned_doc['characters']})
+   changed=json.loads(registry.read_text(encoding='utf-8'));changed['characters']=[]
+   registry.write_text(json.dumps(changed,ensure_ascii=False),encoding='utf-8')
+   self.assertEqual(pin['sha256'],h(version.read_bytes()))
+   self.assertTrue({'林舟','柳恺','看门大妈'} <= {item['name'] for item in json.loads(version.read_bytes())['characters']})
+   self.assertEqual(stable_id,next(e['entity_id'] for e in saved['entities'] if e['chapter_name']=='柳恺'))
+   self.assertEqual(old_binding,saved['bindings'][stable_id])
+   new_id='e'+hashlib.sha256((book+'\0看门大妈').encode()).hexdigest()[:24]
+   self.assertIn(new_id,saved['bindings'])
+   self.assertNotEqual(saved['bindings'][new_id],saved['bindings']['narrator'])
+   generated_ids={path.parents[1].name for _,path in generated}
+   expected_lin='e'+hashlib.sha256((book+'\0林舟').encode()).hexdigest()[:24]
+   self.assertEqual({new_id,expected_lin},generated_ids)
+
  def test_missing_profile_triggers_one_rich_discovery_and_registry_is_used(self):
   with tempfile.TemporaryDirectory() as tmp:
    root=Path(tmp);book='book-'+'9'*20;cid='c004';text='林舟是律师。';source=h(text.encode())
@@ -43,8 +108,10 @@ class Tests(unittest.TestCase):
    self.assertFalse(result['artifact']['profile_blocked'])
    saved=base._read(**result['artifact']['auto'])
    self.assertEqual(book,saved['book_id'])
-   self.assertEqual(str(registry),result['artifact']['profile_registry']['path'])
-   self.assertEqual(source,json.loads(registry.read_text(encoding='utf-8'))['source']['chapters'][0]['text_sha256'])
+   pin=result['artifact']['profile_registry'];version=Path(pin['path'])
+   self.assertEqual(registry.parent/'versions',version.parent)
+   self.assertEqual(pin['sha256'],h(version.read_bytes()))
+   self.assertEqual(source,json.loads(version.read_text(encoding='utf-8'))['source']['chapters'][0]['text_sha256'])
 
  def test_alias_requires_explicit_identity_and_book_scoping(self):
   with tempfile.TemporaryDirectory() as tmp:
@@ -102,6 +169,9 @@ class Tests(unittest.TestCase):
         patch.object(base.workflow,'stage_receipt') as stage:
     result=bridge.memory(chapter,[],artifacts)
     auto_doc=base._read(**result['artifact']['auto'])
+    profile_pin=auto_doc['profile_registry'];profile_version=Path(profile_pin['path'])
+    self.assertEqual(registry.parent/'versions',profile_version.parent)
+    self.assertEqual(profile_pin['sha256'],h(profile_version.read_bytes()))
     self.assertTrue(auto_doc['blocked']);self.assertTrue(result['artifact']['profile_blocked'])
     self.assertEqual('alias_or_name_conflict',auto_doc['unresolved'][0]['reason'])
     self.assertEqual('甲',[entity['chapter_name'] for entity in auto_doc['entities']][0])

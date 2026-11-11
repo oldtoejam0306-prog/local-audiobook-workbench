@@ -91,7 +91,8 @@ class MacChapterRenderer:
                              'characters': sum(len(s['text']) for s in segments if s['speaker_id'] == speaker)})
         request = {'action': 'render_chapter', 'book_id': book_id, 'chapter_id': chapter_id,
                    'source_sha256': source_sha256,
-                   'segments': [{'speaker_id': s['speaker_id'], 'text': s['text']} for s in segments],
+                   'segments': [dict(s) for s in segments],
+                   'delivery_policy_sha256': _sha(Path(__file__).with_name('delivery_policy.py').read_bytes()),
                    'voices': voices}
         expected_adapter_sha = _sha(Path(__file__).with_name('console_chapter_render_mac.py').read_bytes())
         output = Path(output_dir)
@@ -109,6 +110,8 @@ class MacChapterRenderer:
                 or response.get('text_sha256') != _sha(text.encode('utf-8'))
                 or not isinstance(response.get('wav_sha256'), str) or not _HASH.fullmatch(response['wav_sha256'])):
             raise ValueError('Mac chapter response failed source/voice binding checks')
+        if response.get('delivery_policy_sha256') != request['delivery_policy_sha256']:
+            raise ValueError('Mac delivery policy differs from the reviewed local source')
         if response.get('adapter_sha256') != expected_adapter_sha:
             raise ValueError('Mac chapter adapter source differs from reviewed local source')
         refs = response.get('voice_refs'); proof = response.get('coverage_proof_data')
@@ -179,6 +182,7 @@ class MacChapterRenderer:
             'source_document_sha256': _sha(raw), 'source_sha256': source_sha256,
             'text_sha256': _sha(text.encode('utf-8')), 'voice_hashes': voice_hashes,
             'voice_coverage': coverage, 'wav_path': str(wav), 'wav_sha256': response['wav_sha256'],
+            'delivery_policy_sha256': response['delivery_policy_sha256'],
             'remote_run_id': run_id, 'metadata_path': response['metadata_path'],
             'coverage_proof_path': response['coverage_proof'], 'coverage_proof': proof,
             'coverage_proof_sha256': proof_sha, 'voice_refs': refs,

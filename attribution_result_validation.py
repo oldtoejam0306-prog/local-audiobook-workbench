@@ -1,6 +1,7 @@
 """Offline, source-literal validation for saved per-chapter attribution results."""
 import copy
 import hashlib
+import delivery_policy
 
 
 def _sha(text):
@@ -61,8 +62,21 @@ def normalize_attribution(input_data, parsed):
         raise ValueError('dialogue result IDs must exactly cover source dialogue IDs')
 
     normalized=copy.deepcopy(parsed)
-    changes=[]
+    changes=[]; delivery_changes=[]
     for row in normalized['dialogues']:
+        # Legacy saved replies omit delivery. Preserve that omission so old
+        # normalized-stage documents and hashes remain byte-for-byte stable;
+        # consumers apply the neutral default at the policy boundary.
+        if 'delivery' in row:
+            try:
+                row['delivery']=delivery_policy.validate_delivery(row['delivery'])
+            except ValueError:
+                delivery_changes.append({'id':row['id'],'reason':'unsupported_or_malformed_delivery',
+                                         'original_delivery':row['delivery'],'normalized_delivery':'neutral'})
+                row['delivery']='neutral'
+        else:
+            delivery_changes.append({'id':row['id'],'reason':'legacy_delivery_missing',
+                                     'normalized_delivery':'neutral'})
         evidence=row['evidence']
         reason=None
         if evidence and evidence not in text:
@@ -97,7 +111,7 @@ def normalize_attribution(input_data, parsed):
             accepted.append(candidate)
     normalized['characters']=accepted
     audit={'status':'derived_locally','execution_kind':'derived_locally',
-        'rule_set':'literal_source_evidence_v1','changes':changes,
+        'rule_set':'literal_source_evidence_v1','changes':changes,'delivery_audit':delivery_changes,
         'source':{'book_id':input_data.get('book_id'),'chapter_id':input_data.get('chapter_id'),
             'source_sha256':_sha(text)},'human_reviewed':False}
     return normalized,audit

@@ -62,23 +62,31 @@ def _atomic(path: Path, obj):
 
 def validate_request(req: dict) -> dict:
     required = {'action', 'book_id', 'chapter_id', 'source_sha256', 'segments', 'voices'}
-    if not isinstance(req, dict) or set(req) != required or req['action'] != 'render_chapter':
+    if (not isinstance(req, dict) or not required.issubset(req)
+            or set(req) - required - {'delivery_policy_sha256'} or req['action'] != 'render_chapter'):
         raise ValueError('invalid render_chapter request')
     if any(not isinstance(req[k], str) or not SAFE.fullmatch(req[k]) for k in ('book_id', 'chapter_id')):
         raise ValueError('invalid book/chapter identifier')
     if not isinstance(req['source_sha256'], str) or not HASH.fullmatch(req['source_sha256']):
         raise ValueError('invalid source SHA-256')
+    from delivery_policy import validate_delivery, validate_override
+    expected_policy = req.get('delivery_policy_sha256')
+    if expected_policy is not None and expected_policy != _sha(Path(__file__).with_name('delivery_policy.py').read_bytes()):
+        raise ValueError('delivery policy source differs from the caller')
     segments = req['segments']
     if not isinstance(segments, list) or not segments: raise ValueError('segments required')
     text_parts = []
     roles = set()
     for seg in segments:
-        if not isinstance(seg, dict) or set(seg) != {'speaker_id', 'text'}:
+        if (not isinstance(seg, dict) or not {'speaker_id', 'text'}.issubset(seg)
+                or set(seg) - {'speaker_id', 'text', 'delivery', 'instruct'}):
             raise ValueError('invalid source segment')
         speaker, text = seg['speaker_id'], seg['text']
         if (not isinstance(speaker, str) or not SAFE.fullmatch(speaker) or not isinstance(text, str)
                 or not text.strip() or any(not c.isprintable() and c not in '\n\r\t' for c in text)):
             raise ValueError('invalid source segment text/speaker')
+        validate_delivery(seg.get('delivery', 'neutral'))
+        if 'instruct' in seg: validate_override(seg['instruct'])
         text_parts.append(text); roles.add(speaker)
     text = ''.join(text_parts)
     if not text.strip() or len(text) > MAX_CHARS: raise ValueError('chapter must contain 1–18000 codepoints')
@@ -140,7 +148,7 @@ def _prepare_run(req, resolved, text):
     (run / 'stderr.log').write_text('', encoding='utf-8')
     cache_components = ('console_chapter_render_mac.py', 'native_unit_cache.py',
         'chapter-render-driver.py', 'chapter-monitor.py', 'chapter_model_cache.py',
-        'mac_render_resources.py', 'isolated_huashuo_library.py', 'release_config.py', 'natural_pacing.py')
+        'mac_render_resources.py', 'isolated_huashuo_library.py', 'release_config.py', 'natural_pacing.py', 'delivery_policy.py')
     pins = {name: _sha((CODE_DIR / name).read_bytes()) for name in cache_components}
     _atomic(run / 'cache-settings.json', {'root': str(ROOT / 'unit-cache'),
         'adapter_sha256': _sha(_canonical(pins)), 'components': pins})
@@ -194,7 +202,7 @@ def _build_driver(run, request, text):
     required = (driver, monitor, CODE_DIR / 'isolated_huashuo_library.py',
                 CODE_DIR / 'release_config.py', CODE_DIR / 'native_unit_cache.py',
                 CODE_DIR / 'mac_render_resources.py', CODE_DIR / 'chapter_model_cache.py',
-                CODE_DIR / 'natural_pacing.py')
+                CODE_DIR / 'natural_pacing.py', CODE_DIR / 'delivery_policy.py')
     if not all(path.is_file() and not path.is_symlink() for path in required):
         raise RuntimeError('portable chapter driver closure is incomplete')
     shutil.copyfile(driver, run / 'render-driver.py')
@@ -205,7 +213,7 @@ def _build_driver(run, request, text):
     if wrapper.count(title_marker) != 1: raise RuntimeError('wrapper no-titles marker changed')
     wrapper = wrapper.replace(title_marker, "if command in ('synth','package'):args.extend(['--no-opening','--no-closing','--no-titles'])")
     (run / 'isolated_huashuo_library.py').write_text(wrapper, encoding='utf-8')
-    for name in ('release_config.py', 'native_unit_cache.py', 'mac_render_resources.py', 'chapter_model_cache.py', 'natural_pacing.py'):
+    for name in ('release_config.py', 'native_unit_cache.py', 'mac_render_resources.py', 'chapter_model_cache.py', 'natural_pacing.py', 'delivery_policy.py'):
         shutil.copyfile(CODE_DIR / name, run / name)
     return monitor_sha
 
@@ -289,6 +297,7 @@ def render(req):
                 'voice_refs': published['voice_refs'], 'runtime_monitor': monitor,
                 'monitor_sha256': monitor_sha,
                 'synthesis_statistics': json.loads((run / 'synthesis-statistics.json').read_bytes()),
+                'delivery_policy_sha256': _sha(Path(__file__).with_name('delivery_policy.py').read_bytes()),
                 'adapter_sha256': _sha(Path(__file__).read_bytes()), 'human_reviewed': False}
             _atomic(run / 'response.json', out)
             _atomic(run / 'journal.json', {'schema_version': 1, 'run_id': run.name, 'status': 'complete',

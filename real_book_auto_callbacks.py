@@ -5,6 +5,7 @@ Identity matching is conservative and all candidates remain unreviewed.
 """
 import hashlib
 import json
+import os
 import re
 from pathlib import Path
 import real_book_sequence as seq
@@ -40,14 +41,34 @@ class AutoBridge(base.Bridge):
             raise ValueError('profile discovery source does not match verified chapter')
         profile_root = self.voice_root.parent
         registry_path = profile_root/'character-profiles'/chapter['book_id']/'current.json'
+        profile_snapshot = None
 
         def load_profiles():
+            nonlocal profile_snapshot
             if not registry_path.is_file():
                 return None
-            doc = json.loads(registry_path.read_text(encoding='utf-8-sig'))
+            raw = registry_path.read_bytes()
+            doc = json.loads(raw.decode('utf-8-sig'))
             if (doc.get('book_id') != chapter['book_id'] or doc.get('mode') != 'character_profiles_v1'
                     or not isinstance(doc.get('characters'), list)):
                 raise ValueError('人物画像注册表协议或书籍身份不匹配')
+            version_dir = registry_path.parent/'versions'
+            if version_dir.is_symlink():
+                raise ValueError('人物画像版本目录不能是符号链接')
+            version_dir.mkdir(exist_ok=True)
+            if version_dir.is_symlink() or not version_dir.is_dir():
+                raise ValueError('人物画像版本目录无效')
+            version_sha = hashlib.sha256(raw).hexdigest()
+            version_path = version_dir/(version_sha+'.json')
+            if version_path.is_symlink():
+                raise ValueError('人物画像版本快照不能是符号链接')
+            try:
+                with version_path.open('xb') as stream:
+                    stream.write(raw); stream.flush(); os.fsync(stream.fileno())
+            except FileExistsError:
+                if version_path.is_symlink() or version_path.read_bytes() != raw:
+                    raise ValueError('人物画像版本快照摘要冲突')
+            profile_snapshot = {'path':str(version_path),'sha256':version_sha}
             return doc
 
         profile_document = load_profiles()
@@ -73,7 +94,11 @@ class AutoBridge(base.Bridge):
         ensure_result = {'status': 'not_needed'}
         if should_ensure:
             try:
-                ensure_result = self.profile_ensurer(payload, root=profile_root, dispatcher=self.profile_dispatcher)
+                ensure_payload = payload
+                if new_names:
+                    ensure_payload = dict(payload)
+                    ensure_payload['profile_required_names'] = sorted(new_names)
+                ensure_result = self.profile_ensurer(ensure_payload, root=profile_root, dispatcher=self.profile_dispatcher)
             except Exception as exc:
                 failure=getattr(exc,'result',{})
                 detail={'reason':'profile_ensure_failed','status':getattr(exc,'status','unknown'),
@@ -190,11 +215,12 @@ class AutoBridge(base.Bridge):
             rows=[{'entity_id':i,'reason':'multiple_candidates_same_entity','blocking':True} for i in sorted(bad)]
             unresolved.extend(rows);blockers.extend(rows)
             entities=[e for e in entities if e['entity_id'] not in bad];profiles=[p for p in profiles if p['entity_id'] not in bad]
-        profile_hash=hashlib.sha256(registry_path.read_bytes()).hexdigest()
+        if profile_snapshot is None:
+            raise ValueError('人物画像版本快照不存在')
         if blockers:
             blocked={'book_id':chapter['book_id'],'chapter_id':chapter['id'],'entities':entities,'bindings':{},
                 'unresolved':unresolved,'blocking_conflicts':blockers,'blocked':True,'human_reviewed':False,
-                'profile_registry':{'path':str(registry_path),'sha256':profile_hash},'profile_ensure':ensure_result}
+                'profile_registry':dict(profile_snapshot),'profile_ensure':ensure_result}
             pointer=base._save(self._dir(chapter)/'auto-voices.json',blocked)
             return {'status':'ok','artifact':dict(original['artifact'],auto=pointer,
                 profile_blocked=True,blocking_conflicts=blockers)}
@@ -241,7 +267,8 @@ class AutoBridge(base.Bridge):
         blocked=allocation_status!='complete' or bool(allocation_unresolved)
         doc={'book_id':chapter['book_id'],'chapter_id':chapter['id'],'entities':entities,
              'bindings':allocation.get('bindings',{}),'unresolved':unresolved,'human_reviewed':False,
-             'voice_design_plan':plan_pointer,'blocked':blocked,
+             'voice_design_plan':plan_pointer,'profile_registry':dict(profile_snapshot),
+             'profile_ensure':ensure_result,'blocked':blocked,
              'blocking_conflicts':allocation_blockers}
         if memory.get('execution_kind') == 'derived_locally':
             doc.update({'execution_kind':'derived_locally',
@@ -252,7 +279,7 @@ class AutoBridge(base.Bridge):
         pointer=base._save(self._dir(chapter)/'auto-voices.json',doc)
         return {'status':'ok','artifact':dict(original['artifact'],auto=pointer,profile_blocked=blocked,
             blocking_conflicts=allocation_blockers,
-            profile_registry={'path':str(registry_path),'sha256':profile_hash},profile_ensure=ensure_result)}
+            profile_registry=dict(profile_snapshot),profile_ensure=ensure_result)}
 
     def stage(self, chapter, prior, artifacts):
         auto_doc=base._read(**artifacts['memory']['auto'])

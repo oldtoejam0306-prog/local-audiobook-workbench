@@ -1,4 +1,4 @@
-import hashlib,tempfile,unittest
+import hashlib,json,tempfile,unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import real_book_auto_voice as a
@@ -38,6 +38,26 @@ class Tests(unittest.TestCase):
   description=profile('e','甲')['design_text']
   self.assertEqual(a.creative_description(description),description)
   with self.assertRaises(ValueError):a.generate_local_fictional('模仿真人',Path('unused'))
+ def test_generation_failure_persists_bounded_transfer_diagnostics_without_retry(self):
+  with tempfile.TemporaryDirectory() as tmp:
+   root=Path(tmp);n=vector(root/'narrator');n['book_role_key']='test\0n'
+   narrator={'record':n,'console_key':'test\0n'};book='book-'+'9'*20;item=profile('e','甲');calls=[]
+   def failed_transfer(description,directory):
+    calls.append(1);voice=directory/'voice';voice.mkdir()
+    (voice/'remote-completion.json').write_text('{"status":"remote_complete"}',encoding='utf-8')
+    raise RuntimeError('SCP failed for generated.wav (exit 1): fixture failure')
+   result=a.allocate(root/'auto-voices',book,[item],narrator,failed_transfer)
+   row=result['unresolved'][0]
+   self.assertEqual('RuntimeError',row['error_type'])
+   self.assertIn('SCP failed',row['error_message'])
+   self.assertTrue(row['remote_completion_present'])
+   failure=Path(row['failure_record']);self.assertTrue(failure.is_file())
+   saved=json.loads(failure.read_bytes())
+   self.assertEqual(row['remote_completion_marker'],saved['remote_completion_marker'])
+   self.assertTrue((failure.parent/'generation.reserved.json').is_file())
+   retry=a.allocate(root/'auto-voices',book,[item],narrator,failed_transfer)
+   self.assertEqual(1,len(calls))
+   self.assertEqual(row['remote_completion_marker'],retry['unresolved'][0]['remote_completion_marker'])
  def test_missing_source_bound_design_is_rejected_before_generation(self):
   p=profile('e','甲');p.pop('design_text')
   with self.assertRaisesRegex(ValueError,'source-bound'):

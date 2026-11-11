@@ -36,6 +36,7 @@ try:
  model_hash=hashlib.sha256(json.dumps(before,sort_keys=True,separators=(',',':')).encode()).hexdigest()
  data=json.loads((root/'request.json').read_text(encoding='utf-8'));segments=data['segments'];text=''.join(x['text'] for x in segments)
  lines=[x['text'] for x in segments];roles=[x['speaker_id'] for x in segments]
+ from delivery_policy import instruction_for
  if hashlib.sha256(text.encode()).hexdigest()!=data['source_sha256']:raise RuntimeError('chapter text hash mismatch')
  chapter_prefix=data['chapter_id']+'\n';metadata_text=chapter_prefix+text
  wd=stage/'work';wd.mkdir(exist_ok=True);(stage/'book.txt').write_text(metadata_text,encoding='utf-8');(wd/'text.txt').write_text(metadata_text,encoding='utf-8')
@@ -43,10 +44,26 @@ try:
  rows=[header,{'type':'chapter','id':'c001','text':data['chapter_id'],'level':1,'src':[0,len(data['chapter_id'])]}]
  offset=len(chapter_prefix)
  for i,(line,role) in enumerate(zip(lines,roles)):
-  rows.append({'type':'dialogue','id':'c001.p'+str(i+1),'text':line,'say':line,'speaker':role,'src':[offset,offset+len(line)]});offset+=len(line)
+  row={'type':'dialogue','id':'c001.p'+str(i+1),'text':line,'say':line,'speaker':role,'src':[offset,offset+len(line)]}
+  segment=segments[i]
+  hint=instruction_for(segment.get('delivery','neutral'),segment.get('instruct'))
+  if hint is not None:row['emotion']=hint
+  rows.append(row);offset+=len(line)
  (wd/'script.huaben.jsonl').write_text(''.join(json.dumps(x,ensure_ascii=False)+'\n' for x in rows),encoding='utf-8')
  narrator_ref=refs.get('narrator',next(iter(refs.values())))
  (wd/'cast.json').write_text(json.dumps({'narrator':{'voice':narrator_ref},'characters':{r:{'voice':v} for r,v in refs.items()}},ensure_ascii=False),encoding='utf-8')
+ from delivery_policy import apply_terminal_cadence
+ import huashuo.pipeline as pipeline
+ original_make_plan=pipeline.make_plan
+ explicit_blocks={'c001.p'+str(i+1) for i,segment in enumerate(segments) if 'instruct' in segment}
+ def expressive_plan(*args,**kwargs):
+  planned=original_make_plan(*args,**kwargs)
+  if 'narrator' in refs:
+   planned,audit=apply_terminal_cadence(planned,refs['narrator'],explicit_blocks)
+  else:audit=[]
+  (root/'terminal-cadence.json').write_text(json.dumps({'source_sha256':data['source_sha256'],'changes':audit}),encoding='utf-8')
+  return planned
+ pipeline.make_plan=expressive_plan
  import huashuo.synth as synthmod
  import native_unit_cache
  original_synthesize=synthmod.synthesize

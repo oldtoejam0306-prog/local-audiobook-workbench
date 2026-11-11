@@ -11,6 +11,7 @@ import re
 
 import annotation_job
 import staging_render_cast as staging
+import delivery_policy
 
 _SHA=re.compile(r'^[0-9a-f]{64}$')
 
@@ -55,7 +56,7 @@ def adapt_attribution(book_id,chapter_id,script_rows,cast,attribution,binding,*,
     if not isinstance(assignments,list) or not isinstance(unknown,list) or not isinstance(conflicts,list):raise ValueError('invalid attribution lists')
     by_id={}
     for item in assignments:
-        if not isinstance(item,dict) or not {'id','speaker'}<=set(item) or set(item)-{'id','speaker','identity_status','identity_uncertainty'}:raise ValueError('invalid assignment fields')
+        if not isinstance(item,dict) or not {'id','speaker'}<=set(item) or set(item)-{'id','speaker','identity_status','identity_uncertainty','delivery'}:raise ValueError('invalid assignment fields')
         ident=item['id'];speaker=item['speaker']
         if not isinstance(ident,str) or not ident or ident in by_id or not isinstance(speaker,str) or not speaker:
             raise ValueError('invalid or duplicate assignment')
@@ -65,6 +66,8 @@ def adapt_attribution(book_id,chapter_id,script_rows,cast,attribution,binding,*,
         uncertainty=item.get('identity_uncertainty')
         if uncertainty is not None and (not isinstance(uncertainty,str) or not uncertainty.strip() or len(uncertainty)>500 or not all(c.isprintable() for c in uncertainty)):
             raise ValueError('invalid identity uncertainty')
+        if 'delivery' in item:
+            delivery_policy.validate_delivery(item['delivery'])
         by_id[ident]=copy.deepcopy(item)
     expected=set(actual['dialogue_text_sha256'])
     if set(by_id)!=expected:raise ValueError('assignment IDs do not match chapter dialogue')
@@ -112,10 +115,11 @@ def adapt_attribution(book_id,chapter_id,script_rows,cast,attribution,binding,*,
     stage=staging.build_staging_render(selected,cast,unresolved,fallback_voice=fallback_voice)
     rows=copy.deepcopy(script_rows)
     for index,row in zip(indices,stage['script_rows']):rows[index]=row
+    delivery={ident:item['delivery'] for ident,item in by_id.items() if 'delivery' in item}
     audit={'version':1,'scope':'isolated_staging_only','book_id':book_id,'chapter_id':chapter_id,
         'binding':copy.deepcopy(actual),'source_script_sha256':_hash(script_rows),'source_cast_sha256':_hash(cast),
         'attribution_sha256':_hash(attribution),'staging_script_sha256':_hash(rows),'staging_cast_sha256':_hash(stage['cast']),
-        'staging_manifest':stage['manifest'],'changes':changes,'fallback_count':len(unresolved),
+        'staging_manifest':stage['manifest'],'changes':changes,'delivery':delivery,'fallback_count':len(unresolved),
         'needs_correction':bool(unresolved),'needs_identity_review':any(x['requires_identity_review'] for x in changes),'human_reviewed':False,
         'note':'Attribution is a machine proposal; model/receipt provenance must be verified by caller. Voice assets require separate validation.'}
     audit['audit_sha256']=_hash(audit)

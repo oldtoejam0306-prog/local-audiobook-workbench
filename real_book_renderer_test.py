@@ -3,6 +3,32 @@ from pathlib import Path
 import real_book_renderer as r
 
 class RendererTests(unittest.TestCase):
+ def test_prepare_preserves_delivery_and_explicit_instruct_across_split(self):
+  with tempfile.TemporaryDirectory() as tmp:
+   root=Path(tmp);vector=root/'speaker-vector.npy';vector.write_bytes(b'fixed vector')
+   book='book-'+'c'*20;text='甲说。乙说。';source=r.sha(text.encode())
+   key='book\0n';record={'directory':str(root),'request':{'stage':'stage','vector_sha256':r.sha(vector.read_bytes())},'book_role_key':key}
+   bindings={'n':{'console_key':key,'record':record}}
+   stage=root/'stage.json';stage.write_text(json.dumps({'chapters':[{'id':'c1','segments':[
+    {'speaker_id':'n','text':'甲说。','delivery':'sad'},
+    {'speaker_id':'n','text':'乙说。','delivery':'tense','instruct':'用户段落指令'}]}],
+    'audit':{'source_text_sha256':source}},ensure_ascii=False),encoding='utf8')
+   doc,_=r.prepare(stage,book,'c1',source,bindings)
+   self.assertEqual([('sad',None),('tense','用户段落指令')],
+                    [(s.get('delivery'),s.get('instruct')) for s in doc['chapters'][0]['segments']])
+   self.assertEqual(text,''.join(s['text'] for s in doc['chapters'][0]['segments']))
+
+ def test_non_neutral_metadata_rejects_legacy_injected_renderer(self):
+  with tempfile.TemporaryDirectory() as tmp:
+   root=Path(tmp);vector=root/'speaker-vector.npy';vector.write_bytes(b'fixed vector')
+   book='book-'+'d'*20;text='甲说。';source=r.sha(text.encode())
+   key='book\0n';record={'directory':str(root),'request':{'stage':'stage','vector_sha256':r.sha(vector.read_bytes())},'book_role_key':key}
+   bindings={'n':{'console_key':key,'record':record}}
+   stage=root/'stage.json';stage.write_text(json.dumps({'chapters':[{'id':'c1','segments':[
+    {'speaker_id':'n','text':text,'delivery':'angry'}]}],'audit':{'source_text_sha256':source}}),encoding='utf8')
+   with self.assertRaisesRegex(ValueError,'only supports legacy'):
+    r.render(stage,book,'c1',source,bindings,root/'out',render_segment=lambda voice,text,folder: None)
+
  def test_synthetic_and_tamper(self):
   with tempfile.TemporaryDirectory() as tmp:
    root=Path(tmp); vector=root/'speaker-vector.npy';vector.write_bytes(b'fake vector')

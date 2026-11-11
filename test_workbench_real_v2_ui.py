@@ -46,6 +46,28 @@ class SequenceStoreTests(unittest.TestCase):
  def test_missing_store_falls_back_to_legacy_sequence_root(self):
   with patch.dict(sys.modules,{'workbench_job_store':None}):
    self.assertEqual(ui._sequence_root('runtime-root','book-abc','c001'),ui.Path('runtime-root')/'sequence')
+  with patch.dict(sys.modules,{'workbench_job_store':None}):
+   self.assertIsNone(ui._sequence_root('runtime-root','book-abc','c001',require_completed=True))
+ def test_verified_legacy_sequence_audio_remains_playable(self):
+  with tempfile.TemporaryDirectory() as td:
+   root=ui.Path(td);book=ui.existing.BOOKS['Synthetic Book'];index='a'*64;source='b'*64
+   sequence_root=root/'sequence';voices={'narrator':{'voice':'preset:legacy'}}
+   plan=ui.sequence.create_plan(sequence_root,book,index,[{'id':'c001','source_sha256':source}],voices)
+   chapter_root=sequence_root/book/'c001';chapter_root.mkdir(parents=True)
+   wav=chapter_root/'chapter.wav';wav.write_bytes(b'legacy verified wav')
+   manifest=chapter_root/'manifest.json';manifest_raw=ui.workflow._bytes({'legacy':'manifest'});manifest.write_bytes(manifest_raw)
+   receipt={'receipt':{'chapter_wav':str(wav),'wav_sha256':hashlib.sha256(wav.read_bytes()).hexdigest(),
+                       'manifest_path':str(manifest),'manifest_sha256':hashlib.sha256(manifest_raw).hexdigest()}}
+   receipt_path=chapter_root/'render.json';receipt_raw=ui.workflow._bytes(receipt);receipt_path.write_bytes(receipt_raw)
+   artifact={'path':str(receipt_path),'sha256':hashlib.sha256(receipt_raw).hexdigest()}
+   done={'status':'ok','human_reviewed':False,
+         'identity':{'book_id':book,'chapter_id':'c001','stage':'render',
+                     'plan_sha256':ui.sequence.fingerprint(plan)},
+         'artifact':artifact,'artifact_sha256':ui.sequence.fingerprint(artifact)}
+   (chapter_root/'render.done.json').write_bytes(ui.workflow._bytes(done))
+   completed_root=ui._sequence_root(root,book,'c001',require_completed=True)
+   self.assertEqual(sequence_root,completed_root)
+   self.assertEqual(wav,ui.completed_audio(completed_root,book,'c001'))
  def test_store_root_is_passed_through_and_validated_errors_propagate(self):
   expected=ui.Path('runtime-root')/'runs'/'book-abc'/'job'/'sequence';lookup=Mock(return_value=expected)
   with patch.dict(sys.modules,{'workbench_job_store':types.SimpleNamespace(find_sequence_root=lookup)}):
@@ -170,6 +192,35 @@ class CorrectionSourceTests(unittest.TestCase):
   selection.request.return_value={'book_id':book,'human_reviewed':False,'index_sha256':'a'*64,'payload':payload,'payload_sha256':'0'*64}
   with self.assertRaises(ValueError):ui.verified_correction_source(selection,'Synthetic Book','c001')
 
+class LegacyProfileSnapshotTests(unittest.TestCase):
+ def test_changed_current_restores_exact_immutable_version(self):
+  with tempfile.TemporaryDirectory() as td:
+   root=ui.Path(td).resolve();book='book-'+('a'*20)
+   profile_root=root/'character-profiles'/book;versions=profile_root/'versions'
+   versions.mkdir(parents=True)
+   expected=ui.json.dumps({'book_id':book,'version':'old'},sort_keys=True).encode()
+   digest=hashlib.sha256(expected).hexdigest()
+   current=profile_root/'current.json';current.write_text('{"book_id":"other"}',encoding='utf-8')
+   archive=versions/(digest+'.json');archive.write_bytes(expected)
+   pointer={'path':str(current),'sha256':digest}
+   registry,path,used_archive=ui._read_profile_registry_snapshot(pointer,root,book)
+   self.assertEqual({'book_id':book,'version':'old'},registry)
+   self.assertEqual(archive,path);self.assertTrue(used_archive)
+
+ def test_missing_or_tampered_expected_version_is_rejected(self):
+  with tempfile.TemporaryDirectory() as td:
+   root=ui.Path(td).resolve();book='book-'+('b'*20)
+   profile_root=root/'character-profiles'/book;versions=profile_root/'versions'
+   versions.mkdir(parents=True)
+   expected=b'{"book_id":"expected"}';digest=hashlib.sha256(expected).hexdigest()
+   current=profile_root/'current.json';current.write_text('{"book_id":"new"}',encoding='utf-8')
+   pointer={'path':str(current),'sha256':digest}
+   with self.assertRaises((OSError,ValueError)):
+    ui._read_profile_registry_snapshot(pointer,root,book)
+   archive=versions/(digest+'.json');archive.write_bytes(b'{"book_id":"tampered"}')
+   with self.assertRaisesRegex(ValueError,'hash不匹配'):
+    ui._read_profile_registry_snapshot(pointer,root,book)
+
 class InflightRefreshTests(unittest.TestCase):
  def test_play_busy_with_active_range_preserves_verified_task_row(self):
   app=Mock();app.busy=True;app.busy_kind='play';app.active_range=('book-'+('a'*20),('c003',));app._last_progress_probe=0
@@ -205,6 +256,35 @@ class RealSequenceProgressTests(unittest.TestCase):
    rows=ui.inspect_chapter_progress(root,book,['c003'])
    self.assertEqual(['analyze'],rows[0]['completed_stages'])
    self.assertIsNone(rows[0]['error'])
+
+ def test_progress_keeps_current_stages_and_lists_same_source_historical_audio(self):
+  import workbench_job_store
+  with tempfile.TemporaryDirectory() as td:
+   root=ui.Path(td);book=ui.existing.BOOKS['Synthetic Book'];index='a'*64;source='b'*64
+   prior_voices={'narrator':{'voice':'preset:old'}}
+   prior=workbench_job_store.begin_job(root,book,index,[{'id':'c003','source_sha256':source}],
+                                       ui.sequence.fingerprint(prior_voices))
+   prior_plan=ui.sequence.create_plan(prior['sequence_root'],book,index,
+                                      [{'id':'c003','source_sha256':source}],prior_voices)
+   prior_chapter=ui.Path(prior['sequence_root'])/book/'c003';prior_chapter.mkdir(parents=True)
+   artifact={'path':'synthetic-receipt','sha256':'c'*64}
+   done={'status':'ok','human_reviewed':False,'identity':{'book_id':book,'chapter_id':'c003',
+         'stage':'render','plan_sha256':ui.sequence.fingerprint(prior_plan)},'artifact':artifact,
+         'artifact_sha256':ui.sequence.fingerprint(artifact)}
+   (prior_chapter/'render.done.json').write_bytes(ui.workflow._bytes(done))
+   current_voices={'narrator':{'voice':'preset:new'}}
+   current=workbench_job_store.begin_job(root,book,index,[{'id':'c003','source_sha256':source}],
+                                         ui.sequence.fingerprint(current_voices))
+   ui.sequence.create_plan(current['sequence_root'],book,index,
+                           [{'id':'c003','source_sha256':source}],current_voices)
+   with patch.object(ui,'_verified_stage_done',return_value=None), \
+        patch.object(ui,'task_diagnostics',return_value={'status':'not_started'}), \
+        patch.object(ui,'completed_audio',return_value=ui.Path('prior-chapter.wav')):
+    row=ui.inspect_chapter_progress(root,book,['c003'])[0]
+   self.assertEqual(current['sequence_root'],row['sequence_root'])
+   self.assertEqual([],row['completed_stages'])
+   self.assertEqual('prior-chapter.wav',row['audio_path'])
+   self.assertEqual('historical',row['audio_version'])
 
  def test_optional_index_identity_if_present_must_match_real_plan(self):
   with tempfile.TemporaryDirectory() as td:

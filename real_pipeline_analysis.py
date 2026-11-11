@@ -7,6 +7,7 @@ import argparse, hashlib, json, unicodedata
 from pathlib import Path
 import attribution_staging_adapter as adapter
 import staging_render_cast as staging
+import delivery_policy
 
 
 def digest(raw): return hashlib.sha256(raw).hexdigest()
@@ -44,7 +45,9 @@ def build(input_path, receipt_dir, voices):
         if r.get('kind') not in ('dialogue','narration','unknown') or not isinstance(r.get('speaker'),str) or not isinstance(r.get('evidence'),str) or (r['evidence'] and r['evidence'] not in text): raise ValueError('invalid model result')
         name=r['speaker']; usable=r['kind']=='dialogue' and bool(r['evidence']) and name in cast['characters']
         speaker=name if usable else 'unknown'
-        assignments.append({'id':r['id'],'speaker':speaker})
+        assignment={'id':r['id'],'speaker':speaker}
+        if 'delivery' in r: assignment['delivery']=r['delivery']
+        assignments.append(assignment)
         if not usable: unknown.append(r['id'])
     binding=adapter.capture_binding(x['book_id'],x['chapter_id'],rows)
     package=adapter.adapt_attribution(x['book_id'],x['chapter_id'],rows,cast,{'assignments':assignments,'unknown_ids':unknown,'conflicts':[]},binding)
@@ -52,7 +55,8 @@ def build(input_path, receipt_dir, voices):
       'response_id':response.get('id'),'model':response.get('model'),'usage':usage,
       'local_normalization':normalization,
       'normalized_result_sha256':digest(json.dumps(parsed,ensure_ascii=False,sort_keys=True,separators=(',',':'),allow_nan=False).encode('utf-8')),
-      'dialogue_evidence':{r['id']:{'kind':r['kind'],'speaker':r['speaker'],'evidence':r['evidence']} for r in results},'human_reviewed':False,
+      'dialogue_evidence':{r['id']:{'kind':r['kind'],'speaker':r['speaker'],'evidence':r['evidence']} for r in results},
+      'delivery_audit':normalization.get('delivery_audit',[]),'human_reviewed':False,
       'notice':'模型归属与人物均待审；证据子串不证明语义，声音资产需单独验证。仅隔离实验。'}
     return package
 
@@ -64,7 +68,7 @@ def main():
 if __name__=='__main__': main()
 
 
-def to_render_chapters(input_path, package, role_ids, *, narrator_id='narrator'):
+def to_render_chapters(input_path, package, role_ids, *, narrator_id='narrator', delivery_overrides=None):
     """Return (chapters, audit). role_ids maps staged character names to voice speaker IDs.
 
     All non-dialogue and unresolved dialogue use narrator_id. Inter-block source
@@ -76,6 +80,14 @@ def to_render_chapters(input_path, package, role_ids, *, narrator_id='narrator')
         raise ValueError('source binding mismatch')
     if not isinstance(narrator_id,str) or not narrator_id or not isinstance(role_ids,dict): raise ValueError('invalid role mapping')
     if any(not isinstance(k,str) or not isinstance(v,str) or not v for k,v in role_ids.items()): raise ValueError('invalid role mapping')
+    if delivery_overrides is None: delivery_overrides={}
+    if not isinstance(delivery_overrides,dict): raise ValueError('invalid explicit delivery overrides')
+    known_ids={row.get('id') for row in rows}
+    if set(delivery_overrides)-known_ids: raise ValueError('explicit delivery override references unknown block')
+    row_by_id={row.get('id'):row for row in rows}
+    if any(row_by_id[ident].get('type')!='narration' for ident in delivery_overrides):
+        raise ValueError('explicit delivery instructions are limited to narration blocks')
+    for value in delivery_overrides.values(): delivery_policy.validate_override(value)
     changes={item['id']:item for item in audit['changes']}; segments=[]; details=[]; cursor=0
     for row in rows:
         a,b=row['src']
@@ -110,11 +122,22 @@ def to_render_chapters(input_path, package, role_ids, *, narrator_id='narrator')
             else: reason='unresolved_narrator_fallback'
         elif row.get('type') not in ('chapter','narration'):
             raise ValueError('unsupported row type')
-        segments.append({'speaker_id':speaker,'text':row['text']})
+        segment={'speaker_id':speaker,'text':row['text']}
+        # The adapter audit map is keyed by source dialogue ID. Legacy
+        # packages omit entries, preserving their stage shape and digest.
+        delivery_map=package['audit'].get('delivery',{})
+        if row.get('type')=='dialogue' and row['id'] in delivery_map:
+            segment['delivery']=delivery_policy.validate_delivery(delivery_map[row['id']])
+        if row['id'] in delivery_overrides:
+            segment['instruct']=delivery_policy.validate_override(delivery_overrides[row['id']])
+        segments.append(segment)
         details.append({'block_id':row['id'],'type':row['type'],'source_range':[a,b],'speaker_id':speaker,'reason':reason,
                         'model_speaker':change.get('model_speaker') if change else None,
                         'model_evidence':package['provenance']['dialogue_evidence'].get(row['id']) if change else None,
-                        'identity_status':change.get('identity_status') if change else None})
+                        'identity_status':change.get('identity_status') if change else None,
+                        'delivery':segment.get('delivery','neutral'),
+                        'delivery_origin':'model_inference_unreviewed' if row.get('type')=='dialogue' else None,
+                        'explicit_instruct':('instruct' in segment)})
         cursor=b
     suffix=text[cursor:]
     if suffix and not suffix.isspace(): raise ValueError('non-whitespace source suffix')

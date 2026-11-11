@@ -146,11 +146,15 @@ def make_executor(name, assignments=None, legacy_guard=legacy_check, *,
             actual_voices = {'narrator': {'id': 'narrator', 'voice': 'preset:test'},
                              'characters': {}, 'auto_narrator_sha256': seq.fingerprint(narrator)}
             selected = auto._read_selections(base / 'auto-voices', book)
-            code_files = ['real_book_renderer.py', 'console_chapter_render_mac.py', 'native_unit_cache.py', 'natural_pacing.py',
+            code_files = ['real_book_renderer.py', 'console_chapter_render_mac.py', 'native_unit_cache.py', 'natural_pacing.py', 'delivery_policy.py',
                           'real_book_auto_callbacks.py', 'real_pipeline_context_worker.mjs',
+                          'auto_voice_planner.py', 'character_profile_jobs.py', 'character_profile_protocol.mjs',
+                          'profile_json_recovery.mjs',
+                          'real_book_auto_voice.py', 'console_voice_ui.py',
                           'real_pipeline_analysis.py','analysis_dispatch_cache.py','attribution_result_validation.py',
                           'context_compaction.py','correction_memory.py','real_book_sequence_callbacks.py',
-                          'workbench_real_v2_experiment.py','real_book_sequence.py','workbench_real_v2_runtime.py']
+                          'workbench_real_v2_experiment.py','real_book_sequence.py','workbench_real_v2_runtime.py',
+                          'workbench_job_store.py']
             code_pins = {name: hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest()
                          for name in code_files}
             configuration = {'selected_characters': selected,

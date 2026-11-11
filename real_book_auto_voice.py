@@ -186,6 +186,41 @@ def generate_local_fictional(description, output_directory):
     return {'directory': str(directory), 'request': request}
 
 
+def _generation_failure_record(directory, book_id, profile, exc):
+    marker = directory / 'voice' / 'remote-completion.json'
+    failure_path = directory / 'generation.failure.json'
+    failure = {'version': 1, 'status': 'generation_or_transfer_failed',
+        'book_id': book_id, 'entity_id': profile['entity_id'], 'spec_id': profile.get('spec_id'),
+        'profile_sha256': profile.get('profile_sha256'), 'candidate_directory': str(directory),
+        'remote_completion_marker': str(marker), 'remote_completion_present': marker.is_file() and not marker.is_symlink(),
+        'error_type': type(exc).__name__[:120], 'error_message': str(exc)[:1000],
+        'created_unix_ns': time.time_ns()}
+    try:
+        _new(failure_path, failure)
+    except FileExistsError:
+        pass
+    except OSError as write_error:
+        failure['failure_record_error'] = (type(write_error).__name__ + ': ' + str(write_error))[:500]
+    return failure_path, failure
+
+
+def _prior_generation_failure(directory, book_id, profile):
+    path = directory / 'generation.failure.json'
+    if path.is_symlink() or not path.is_file():
+        return {}
+    try:
+        failure = _load(path)
+    except (OSError, ValueError, TypeError):
+        return {'failure_record': str(path), 'failure_record_status': 'invalid'}
+    if (not isinstance(failure, dict) or failure.get('version') != 1
+            or failure.get('book_id') != book_id or failure.get('entity_id') != profile['entity_id']
+            or failure.get('spec_id') != profile.get('spec_id')):
+        return {'failure_record': str(path), 'failure_record_status': 'identity_mismatch'}
+    return {key: failure[key] for key in ('failure_record', 'remote_completion_marker',
+            'remote_completion_present', 'error_type', 'error_message') if key in failure} | {
+                'failure_record': str(path), 'failure_record_status': failure.get('status')}
+
+
 def allocate(root, book_id, profiles, narrator, generate=generate_local_fictional):
     """Return role bindings and unresolved candidates; no silent retries.
 
@@ -252,7 +287,8 @@ def allocate(root, book_id, profiles, narrator, generate=generate_local_fictiona
             description=creative_description(p['design_text'])
             try: _new(reservation, {'book_id':book_id,'entity_id':entity,'status':'generation_may_have_occurred','profile_sha256':_hash(_encoded(p))})
             except FileExistsError:
-                unresolved.append({'entity_id':entity,'reason':'generation_unknown_no_retry'}); continue
+                unresolved.append({'entity_id':entity,'reason':'generation_unknown_no_retry',
+                    'candidate_directory':str(directory),**_prior_generation_failure(directory,book_id,p)}); continue
             try:
                 record=generate(description,directory)
                 if not Path(record['directory']).resolve().is_relative_to(directory.resolve()):
@@ -270,8 +306,13 @@ def allocate(root, book_id, profiles, narrator, generate=generate_local_fictiona
                         'voice_status':'automatically_assigned_not_user_confirmed'}
                 _new(saved,result); output[entity]=binding; recommendations.append(entity)
                 _save_recommendation(root, book_id, entity, binding, p['design_text'], spec_id)
-            except Exception:
-                unresolved.append({'entity_id':entity,'reason':'generation_unknown_no_retry'})
+            except Exception as exc:
+                failure_path,failure=_generation_failure_record(directory,book_id,p,exc)
+                unresolved.append({'entity_id':entity,'reason':'generation_unknown_no_retry',
+                    'candidate_directory':str(directory),'failure_record':str(failure_path),
+                    'remote_completion_marker':failure['remote_completion_marker'],
+                    'remote_completion_present':failure['remote_completion_present'],
+                    'error_type':failure['error_type'],'error_message':failure['error_message']})
         return {'status':'complete' if not unresolved else 'needs_review','bindings':output,
                 'unresolved':unresolved,'alias_conflicts':conflicting,'human_reviewed':False,
                 'selection_status':{entity:selected.get(entity, {}).get('status', 'default_recommendation') for entity in output if entity != 'narrator'},

@@ -24,6 +24,68 @@ def canonical(value):return json.dumps(value,ensure_ascii=False,sort_keys=True,s
 
 
 class WorkbenchJobStoreTests(unittest.TestCase):
+    def _job(self,root,*,index=INDEX,source=None,voice='voice-one',chapter='c001'):
+        source=source or sha(b'source')
+        chapters=[{'id':chapter,'source_sha256':source}]
+        voices={'narrator':voice}
+        job=store.begin_job(root,BOOK,index,chapters,sequence.fingerprint(voices))
+        plan=sequence.create_plan(Path(job['sequence_root']),BOOK,index,chapters,voices)
+        return job,plan,chapters
+
+    def _mark_rendered(self,job,plan,chapter='c001'):
+        chapter_root=Path(job['sequence_root'])/BOOK/chapter
+        chapter_root.mkdir(parents=True,exist_ok=True)
+        artifact={'path':'synthetic-receipt.json','sha256':sha(b'receipt')}
+        identity={'book_id':BOOK,'chapter_id':chapter,'stage':'render',
+                  'plan_sha256':sequence.fingerprint(plan)}
+        done={'status':'ok','human_reviewed':False,'identity':identity,'artifact':artifact,
+              'artifact_sha256':sequence.fingerprint(artifact)}
+        (chapter_root/'render.done.json').write_bytes(canonical(done))
+
+    def test_completed_lookup_keeps_same_source_prior_audio_and_prefers_completed_current(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td);source=sha(b'same source')
+            first,first_plan,_=self._job(root,source=source,voice='voice-old')
+            self._mark_rendered(first,first_plan)
+            current,current_plan,_=self._job(root,source=source,voice='voice-new')
+            self.assertEqual(current['sequence_root'],store.find_sequence_root(root,BOOK,'c001'))
+            self.assertEqual(first['sequence_root'],store.find_sequence_root(
+                root,BOOK,'c001',require_completed=True))
+            self._mark_rendered(current,current_plan)
+            self.assertEqual(current['sequence_root'],store.find_sequence_root(
+                root,BOOK,'c001',require_completed=True))
+
+    def test_completed_lookup_never_falls_back_across_index_or_source_change(self):
+        for current_index,current_source in ((INDEX,sha(b'changed source')),
+                                             ('c'*64,sha(b'original source'))):
+            with self.subTest(index=current_index,source=current_source), tempfile.TemporaryDirectory() as td:
+                root=Path(td);source=sha(b'original source')
+                old,old_plan,_=self._job(root,index=INDEX,source=source,voice='voice-old')
+                self._mark_rendered(old,old_plan)
+                self._job(root,index=current_index,source=current_source,voice='voice-current')
+                self.assertIsNone(store.find_sequence_root(root,BOOK,'c001',require_completed=True))
+
+    def test_completed_lookup_fails_closed_for_corrupt_receipt_and_absent_store(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td);self.assertIsNone(store.find_sequence_root(
+                root,BOOK,'c001',require_completed=True))
+            legacy_root=root/'sequence';legacy_voices={'narrator':'preset:legacy'}
+            legacy_plan=sequence.create_plan(legacy_root,BOOK,INDEX,
+                [{'id':'c001','source_sha256':sha(b'source')}],legacy_voices)
+            legacy_chapter=legacy_root/BOOK/'c001';legacy_chapter.mkdir(parents=True)
+            legacy_artifact={'path':'legacy-receipt','sha256':sha(b'legacy')}
+            legacy_done={'status':'ok','human_reviewed':False,
+                'identity':{'book_id':BOOK,'chapter_id':'c001','stage':'render',
+                            'plan_sha256':sequence.fingerprint(legacy_plan)},
+                'artifact':legacy_artifact,'artifact_sha256':sequence.fingerprint(legacy_artifact)}
+            (legacy_chapter/'render.done.json').write_bytes(canonical(legacy_done))
+            job,plan,_=self._job(root);self._mark_rendered(job,plan)
+            done_path=Path(job['sequence_root'])/BOOK/'c001'/'render.done.json'
+            done=json.loads(done_path.read_bytes());done['artifact_sha256']='0'*64
+            done_path.write_bytes(canonical(done))
+            with self.assertRaisesRegex(store.JobStoreError,'render receipt identity or artifact hash invalid'):
+                store.find_sequence_root(root,BOOK,'c001',require_completed=True)
+
     def test_begin_job_is_idempotent_keeps_history_and_resolves_latest_render(self):
         with tempfile.TemporaryDirectory() as td:
             root=Path(td);chapters=[{'id':'c001','source_sha256':sha(b'one')}]
@@ -57,6 +119,27 @@ class WorkbenchJobStoreTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             root=Path(td)
             self.assertEqual(str(root/'sequence'),store.find_sequence_root(root,BOOK,'c001'))
+
+    def test_legacy_completed_lookup_requires_self_consistent_plan_and_render_done(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td);sequence_root=root/'sequence';source=sha(b'legacy source')
+            chapters=[{'id':'c001','source_sha256':source}];voices={'narrator':'preset:legacy'}
+            plan=sequence.create_plan(sequence_root,BOOK,INDEX,chapters,voices)
+            chapter_root=sequence_root/BOOK/'c001';chapter_root.mkdir(parents=True)
+            artifact={'path':'legacy-render.json','sha256':sha(b'receipt')}
+            done={'status':'ok','human_reviewed':False,
+                  'identity':{'book_id':BOOK,'chapter_id':'c001','stage':'render',
+                              'plan_sha256':sequence.fingerprint(plan)},
+                  'artifact':artifact,'artifact_sha256':sequence.fingerprint(artifact)}
+            (chapter_root/'render.done.json').write_bytes(canonical(done))
+            self.assertEqual(str(sequence_root),store.find_sequence_root(
+                root,BOOK,'c001',require_completed=True))
+            (chapter_root/'render.done.json').unlink()
+            self.assertIsNone(store.find_sequence_root(root,BOOK,'c001',require_completed=True))
+            bad_plan=dict(plan,index_sha256='invalid')
+            (sequence_root/BOOK/'plan.json').write_bytes(canonical(bad_plan))
+            with self.assertRaisesRegex(store.JobStoreError,'legacy sequence plan identity'):
+                store.find_sequence_root(root,BOOK,'c001',require_completed=True)
 
     def test_corrupt_existing_job_store_does_not_fall_back_to_legacy_root(self):
         with tempfile.TemporaryDirectory() as td:
@@ -136,6 +219,65 @@ class WorkbenchJobStoreTests(unittest.TestCase):
             pointer={'path':str(path),'sha256':'0'*64,'auto':{'path':str(auto),'sha256':sha(auto.read_bytes())}}
             with self.assertRaisesRegex(store.JobStoreError,'hash mismatch'):
                 store.publish_memory(root,BOOK,INDEX,{'id':'c001','source_sha256':source_sha},pointer)
+
+    def test_blocked_memory_is_not_published_to_shared_store(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td);source=sha(b'blocked source');chapter={'id':'c001','source_sha256':source}
+            store.begin_job(root,BOOK,INDEX,[chapter],VOICE)
+            external=root/'external';external.mkdir()
+            memory={'book_id':BOOK,'chapter_id':'c001','source_sha256':source,'human_reviewed':False}
+            auto={'book_id':BOOK,'chapter_id':'c001','entities':[],'unresolved':[],'blocked':True,'human_reviewed':False}
+            mp=external/'memory.json';ap=external/'auto.json';mp.write_bytes(canonical(memory));ap.write_bytes(canonical(auto))
+            pointer={'path':str(mp),'sha256':sha(mp.read_bytes()),'auto':{'path':str(ap),'sha256':sha(ap.read_bytes())}}
+            self.assertTrue(store.memory_profile_blocked(root,BOOK,INDEX,chapter,pointer))
+            result=store.publish_shared_memory(root,BOOK,INDEX,chapter,pointer)
+            self.assertEqual({'skipped':True,'reason':'profile_blocked','human_reviewed':False},result)
+            self.assertFalse((root/'memory'/BOOK/INDEX[:20]/'c001').exists())
+            auto['blocked']=False;ap.write_bytes(canonical(auto));pointer['auto']['sha256']=sha(ap.read_bytes())
+            self.assertFalse(store.memory_profile_blocked(root,BOOK,INDEX,chapter,pointer))
+            self.assertTrue(store.publish_shared_memory(root,BOOK,INDEX,chapter,pointer)['path'])
+
+    def test_operator_selected_memory_version_is_exact_and_stales_on_new_version(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td);source=sha(b'source');chapter={'id':'c001','source_sha256':source}
+            store.begin_job(root,BOOK,INDEX,[chapter],VOICE)
+            external=root/'external';external.mkdir()
+            memory={'book_id':BOOK,'chapter_id':'c001','source_sha256':source,'human_reviewed':False}
+            mp=external/'memory.json';mp.write_bytes(canonical(memory))
+            def publish(label,blocked):
+                auto={'book_id':BOOK,'chapter_id':'c001','entities':[
+                    {'entity_id':'e1','name':'synthetic','labels':[label]}],
+                    'unresolved':[],'blocked':blocked,'human_reviewed':False}
+                ap=external/(label+'.json');ap.write_bytes(canonical(auto))
+                pointer={'path':str(mp),'sha256':sha(mp.read_bytes()),
+                         'auto':{'path':str(ap),'sha256':sha(ap.read_bytes())}}
+                return store.publish_memory(root,BOOK,INDEX,chapter,pointer)
+            healthy=publish('healthy-choice',False)
+            publish('other-healthy-choice',False)
+            blocked=publish('blocked-choice',True)
+            with self.assertRaisesRegex(store.MemoryConflictError,'divergent memory versions'):
+                store.prior_memories(root,BOOK,INDEX,'c002')
+            with self.assertRaisesRegex(store.MemoryConflictError,'blocked'):
+                store.select_memory_version(root,BOOK,INDEX,'c001',source,blocked['version_id'])
+            selected=store.select_memory_version(root,BOOK,INDEX,'c001',source,healthy['version_id'])
+            self.assertFalse(selected['human_reviewed'])
+            source_dir=root/'memory'/BOOK/INDEX[:20]/'c001'/source[:20]
+            pointer=json.loads((source_dir/'current-selection.json').read_bytes())
+            selection=json.loads(Path(pointer['path']).read_bytes())
+            self.assertEqual(3,len(selection['versions']))
+            self.assertEqual(healthy['version_id'],selection['selected_version_id'])
+            self.assertEqual(sha(canonical(selection['versions'])),selection['versions_sha256'])
+            prior=store.prior_memories(root,BOOK,INDEX,'c002')
+            self.assertEqual(1,len(prior))
+            selected_auto=json.loads(Path(prior[0]['artifacts']['memory']['auto']['path']).read_bytes())
+            self.assertFalse(selected_auto['blocked'])
+            publish('new-version-after-selection',False)
+            with self.assertRaisesRegex(store.MemoryConflictError,'selection is stale'):
+                store.prior_memories(root,BOOK,INDEX,'c002')
+            selected=store.select_memory_version(root,BOOK,INDEX,'c001',source,healthy['version_id'])
+            Path(selected['path']).write_bytes(b'tampered selection receipt')
+            with self.assertRaisesRegex(store.JobStoreError,'pointer bytes/hash mismatch'):
+                store.prior_memories(root,BOOK,INDEX,'c002')
 
     def test_prior_rejects_modified_internal_pointer_and_out_of_root_paths(self):
         with tempfile.TemporaryDirectory() as td:

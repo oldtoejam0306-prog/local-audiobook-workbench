@@ -285,6 +285,7 @@ def plans_from_character_profiles(document: dict[str, Any]) -> dict[str, Any]:
         return result
 
     plans = []
+    unresolved_aliases = []
     seen = set()
     for profile in document['characters']:
         if not isinstance(profile, dict):
@@ -298,12 +299,25 @@ def plans_from_character_profiles(document: dict[str, Any]) -> dict[str, Any]:
             raise ValueError(f'{name}: aliases must be a list')
         aliases = []
         for alias in raw_aliases:
-            if (not isinstance(alias, dict) or not isinstance(alias.get('name'), str)
-                    or not alias['name'].strip() or not anchors(alias.get('evidence'))
-                    or any(name not in ref['quote'] or alias['name'] not in ref['quote']
-                           for ref in anchors(alias.get('evidence')))):
-                raise ValueError(f'{name}: alias lacks source-bound identity evidence')
-            aliases.append({'name': alias['name'].strip(), 'evidence': anchors(alias['evidence'])})
+            alias_name = alias.get('name') if isinstance(alias, dict) else None
+            raw_evidence = alias.get('evidence') if isinstance(alias, dict) else None
+            alias_anchors = anchors(raw_evidence)
+            evidence_is_bound = (isinstance(raw_evidence, list) and bool(raw_evidence)
+                                 and len(alias_anchors) == len(raw_evidence))
+            names_are_linked = (isinstance(alias_name, str) and bool(alias_name.strip())
+                                and bool(alias_anchors)
+                                and all(name in ref['quote'] and alias_name.strip() in ref['quote']
+                                        for ref in alias_anchors))
+            if not evidence_is_bound or not names_are_linked:
+                unresolved_aliases.append({
+                    'canonical': name,
+                    'candidate': alias_name if alias_name is not None else alias,
+                    'evidence': raw_evidence,
+                    'reason': ('canonical_and_alias_not_co_located' if evidence_is_bound
+                               else 'invalid_or_untrusted_source_evidence'),
+                })
+                continue
+            aliases.append({'name': alias_name.strip(), 'evidence': alias_anchors})
         for key in ('identity', 'gender', 'age'):
             claim = profile.get(key)
             if not isinstance(claim, dict) or claim.get('status') not in ('explicit', 'inferred', 'unknown'):
@@ -384,4 +398,5 @@ def plans_from_character_profiles(document: dict[str, Any]) -> dict[str, Any]:
     return {'version': 1, 'book_id': document['book_id'],
             'source': document.get('source'), 'audio_generated': False,
             'model_called': False, 'plans': plans,
+            'unresolved_aliases': unresolved_aliases,
             'issues': document.get('issues', []), 'scope_summary': document.get('scope_summary')}

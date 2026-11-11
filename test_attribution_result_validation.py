@@ -85,6 +85,25 @@ class AttributionResultValidationTests(unittest.TestCase):
         self.assertEqual('unknown',normalized['dialogues'][0]['speaker'])
         self.assertEqual('missing_literal_evidence',audit['changes'][0]['reason'])
 
+    def test_legacy_delivery_defaults_semantically_without_changing_rows(self):
+        payload,parsed=fixture()
+        normalized,audit=normalize_attribution(payload,parsed)
+        self.assertNotIn('delivery',normalized['dialogues'][0])
+        self.assertEqual('neutral',normalized['dialogues'][0].get('delivery','neutral'))
+        self.assertEqual('legacy_delivery_missing',audit['delivery_audit'][0]['reason'])
+        self.assertNotIn('delivery', [entry['type'] for entry in audit['changes']])
+
+    def test_valid_delivery_is_preserved_and_bad_value_is_separately_audited(self):
+        payload,parsed=fixture()
+        parsed['dialogues'][0]['delivery']='tense'
+        parsed['dialogues'][1]['delivery']={'mood':'sad'}
+        normalized,audit=normalize_attribution(payload,parsed)
+        self.assertEqual('tense',normalized['dialogues'][0]['delivery'])
+        self.assertEqual('neutral',normalized['dialogues'][1]['delivery'])
+        self.assertEqual('unsupported_or_malformed_delivery',audit['delivery_audit'][0]['reason'])
+        self.assertTrue(all(entry['type'] in ('dialogue_downgraded','character_candidate_dropped')
+                            for entry in audit['changes']))
+
 
 if __name__=='__main__':
     unittest.main()

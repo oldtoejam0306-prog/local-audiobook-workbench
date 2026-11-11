@@ -47,6 +47,7 @@ def query(req):
   verified=service.dispatch(q)
  finally:rpc._restore_summary=original
  result.update(book_id=req['book_id'],index_sha256=verified['index_sha256'],human_reviewed=False)
+ if chapter is not None: result['chapter_id']=verified['chapter_id']
  return result
 
 def main():
