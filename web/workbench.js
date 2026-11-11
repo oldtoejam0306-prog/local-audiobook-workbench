@@ -3,7 +3,7 @@ const NAVIGATION_FRAGMENTS = new Set(['chapters', 'chapter', 'editor', 'voices',
 const POLL_INTERVAL_MS = 800;
 const PAID_ACTIONS = new Set(['profiles_analyze', 'execute', 'voice_generate', 'revision_generate']);
 const BUSY_SAFE_ACTIONS = new Set(['pause', 'billing_refresh', 'billing_reprice', 'stop', 'playback_started']);
-const IDENTITY_EXEMPT_ACTIONS = new Set(['book', 'billing_refresh', 'billing_reprice', 'stop', 'playback_started', 'shutdown']);
+const IDENTITY_EXEMPT_ACTIONS = new Set(['book', 'import_commit', 'import_clear', 'import_heading', 'billing_refresh', 'billing_reprice', 'stop', 'playback_started', 'shutdown']);
 const CHAPTER_BOUND_ACTIONS = new Set(['revision_generate', 'revision_play', 'revision_adopt', 'revision_restore']);
 
 export function bindActionIdentity(action, payload = {}, { bookId = '', chapterId = '' } = {}) {
@@ -11,6 +11,14 @@ export function bindActionIdentity(action, payload = {}, { bookId = '', chapterI
   if (!IDENTITY_EXEMPT_ACTIONS.has(action) && bookId && !Object.hasOwn(bound, 'expected_book_id')) bound.expected_book_id = bookId;
   if (CHAPTER_BOUND_ACTIONS.has(action) && chapterId && !Object.hasOwn(bound, 'expected_chapter_id')) bound.expected_chapter_id = chapterId;
   return bound;
+}
+
+export function buildImportCommitPayload(previewId, title, chapterStarts) {
+  return {
+    preview_id: String(previewId || ''),
+    title: String(title || '').trim(),
+    chapter_starts: [...new Set([...(chapterStarts || [])].map(Number).filter((value) => Number.isInteger(value) && value >= 0))].sort((a, b) => a - b),
+  };
 }
 
 export function readSessionToken(browserWindow = window, storage = sessionStorage) {
@@ -76,6 +84,17 @@ export class WorkbenchClient {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
+    });
+  }
+
+  previewBook(file) {
+    return this.request('/api/books/preview', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/octet-stream',
+        'X-Book-Filename': encodeURIComponent(file.name),
+      },
+      body: file,
     });
   }
 }
@@ -269,6 +288,20 @@ export class WorkbenchUI {
     this.activePlaybackSpeed = 1;
     this.lastPlaybackLabel = '';
     this.priceDraft = null;
+    this.importPending = false;
+    this.importFile = null;
+    this.importTitleDraft = '';
+    this.importEnabledStarts = new Set();
+    this.importSelectedChapter = '';
+    this.importPreviewId = '';
+    this.importHeadingDraft = '';
+    this.importHeadingSearched = false;
+    this.importHeadingSearchedFor = '';
+    this.importHeadingAwaiting = '';
+    this.importCommitAwaiting = null;
+    this.importError = '';
+    this.importPreviewSuppressed = false;
+    this.importPriorPreviewId = '';
     this.shutdownRequested = false;
     this.root = documentRef.getElementById('workbench');
     this.content = documentRef.getElementById('page-content');
@@ -308,6 +341,17 @@ export class WorkbenchUI {
     this.document.getElementById('billing-close').addEventListener('click', () => this.toggleBilling(false));
     this.document.getElementById('book-select').addEventListener('change', (event) => {
       if (event.target.value) this.runAction('book', { book_id: event.target.value });
+    });
+    this.document.getElementById('import-book-button').addEventListener('click', () => this.openImport());
+    this.document.getElementById('import-file-input').addEventListener('change', (event) => {
+      this.importFile = event.target.files?.[0] || null;
+      this.importError = '';
+      this.importPreviewSuppressed = Boolean(this.importFile);
+      if (this.importFile) {
+        this.importPriorPreviewId = this.state?.import_preview?.preview_id || '';
+      }
+      event.target.value = '';
+      if (this.page === 'import') this.renderPage();
     });
     this.root.querySelector('.brand').addEventListener('click', (event) => this.onBrandClick(event));
     this.root.querySelectorAll('[data-page]').forEach((button) => button.addEventListener('click', () => this.setPage(button.dataset.page)));
@@ -359,7 +403,24 @@ export class WorkbenchUI {
     const previousTaskState = this.state ? JSON.stringify([this.state.status, this.state.error, this.state.busy]) : '';
     const previousProfiles = new Map((this.state?.profiles || []).map((profile) => [String(profile.id), profile.profile_revision]));
     const wasBusy = Boolean(this.state?.busy);
+    const previousPreviewId = this.state?.import_preview?.preview_id || '';
     this.state = state;
+    this.observeImportCommitState(state);
+    this.observeImportHeadingState(state);
+    if (this.importPreviewSuppressed && state.import_preview?.preview_id
+      && state.import_preview.preview_id !== this.importPriorPreviewId
+      && state.busy?.kind !== 'import_preview') this.importPreviewSuppressed = false;
+    const preview = this.importPreviewSuppressed ? null : state.import_preview;
+    if (preview?.preview_id && preview.preview_id !== previousPreviewId && preview.preview_id !== this.importPreviewId) {
+      this.importPreviewId = preview.preview_id;
+      this.importTitleDraft = preview.existing_name || preview.title || preview.filename?.replace(/\.[^.]+$/, '') || '';
+      this.importEnabledStarts = new Set((preview.chapters || []).map((chapter) => Number(chapter.start)));
+      this.importSelectedChapter = String(preview.chapters?.[0]?.id || '');
+      this.importHeadingDraft = '';
+      this.importHeadingSearched = false;
+      this.importHeadingSearchedFor = '';
+      this.importError = '';
+    }
     if (previousBook === (state.book_id || '')) {
       for (const profile of state.profiles || []) {
         const roleId = String(profile.id);
@@ -396,7 +457,8 @@ export class WorkbenchUI {
     this.updateNavigation();
     const pageSignature = this.pageStateSignature();
     if (pageSignature !== this.lastPageSignature) {
-      if (this.shouldDeferRender()) {
+      if (this.page === 'import') this.renderPage();
+      else if (this.shouldDeferRender()) {
         this.pendingRender = true;
         this.syncBusyControls();
       } else this.renderPage();
@@ -425,8 +487,10 @@ export class WorkbenchUI {
       }
     }
     if (this.document.activeElement !== select) select.value = String(state.book_id || '');
-    select.disabled = !books.length || Boolean(state.busy);
-    this.document.getElementById('shutdown-button').disabled = Boolean(state.busy);
+    select.disabled = !books.length || this.isBusy();
+    const importButton = this.document.getElementById('import-book-button');
+    importButton.disabled = this.isBusy();
+    this.document.getElementById('shutdown-button').disabled = this.isBusy();
   }
 
   updateNavigation() {
@@ -439,10 +503,19 @@ export class WorkbenchUI {
   }
 
   setPage(page) {
-    if (!['chapters', 'editor', 'voices'].includes(page)) return;
+    if (!['chapters', 'editor', 'voices', 'import'].includes(page)) return;
     this.page = page;
     this.updateNavigation();
     this.renderPage();
+  }
+
+  openImport() {
+    if (this.isBusy()) {
+      this.setLiveStatus('当前任务运行中，完成后再导入新书。', true);
+      return;
+    }
+    this.importError = '';
+    this.setPage('import');
   }
 
   onBrandClick(event) {
@@ -457,7 +530,8 @@ export class WorkbenchUI {
     this.content.replaceChildren();
     this.content.dataset.bookId = String(this.state.book_id || '');
     this.content.dataset.chapterId = this.page === 'editor' ? String(this.state.editor?.chapter_id || '') : '';
-    if (this.page === 'chapters') this.content.append(this.renderChapters());
+    if (this.page === 'import') this.content.append(this.renderImport());
+    else if (this.page === 'chapters') this.content.append(this.renderChapters());
     else if (this.page === 'editor') this.content.append(this.renderEditor());
     else this.content.append(this.renderVoices());
     this.restoreFocus(focus);
@@ -469,6 +543,7 @@ export class WorkbenchUI {
   pageStateSignature() {
     const state = this.state || {};
     const busy = state.busy ? [state.busy.kind, state.busy.label] : null;
+    if (this.page === 'import') return JSON.stringify([state.import_preview, busy, this.importPending, this.importError, this.importFile?.name, this.importFile?.size]);
     if (this.page === 'chapters') return JSON.stringify([state.books, state.book_id, state.book_name, state.range, state.chapters, state.diagnostics, busy, this.selectedChapter]);
     if (this.page === 'editor') return JSON.stringify([state.book_id, state.book_name, state.chapters, state.editor, state.diagnostics, busy]);
     return JSON.stringify([state.book_id, state.book_name, state.selected_role, state.profiles, busy]);
@@ -486,7 +561,7 @@ export class WorkbenchUI {
 
   syncBusyControls() {
     if (!this.isBusy()) return;
-    this.content.querySelectorAll('textarea[data-draft-key], [data-range-start], [data-range-end], [data-speaker-select]').forEach((control) => { control.disabled = true; });
+    this.content.querySelectorAll('textarea[data-draft-key], [data-range-start], [data-range-end], [data-speaker-select], [data-import-title], [data-import-heading], [data-import-start], [data-local="import_chapter"], [data-local="add_import_heading"]').forEach((control) => { control.disabled = true; });
     this.content.querySelectorAll('button[data-action]').forEach((button) => {
       if (!BUSY_SAFE_ACTIONS.has(button.dataset.action)) button.disabled = true;
     });
@@ -523,8 +598,9 @@ export class WorkbenchUI {
     const startIndex = chapterRows.findIndex((item) => String(item.id) === String(range.start || ''));
     const endIndex = chapterRows.findIndex((item) => String(item.id) === String(range.end || ''));
     const visibleRows = startIndex >= 0 && endIndex >= startIndex ? chapterRows.slice(startIndex, endIndex + 1) : [];
-    const startSelect = selectControl('起始章节', chapterRows.map((item) => ({ value: item.id, label: item.name || item.title || item.id })), range.start, { className: 'range-field', dataKey: 'rangeStart' });
-    const endSelect = selectControl('结束章节', chapterRows.map((item) => ({ value: item.id, label: item.name || item.title || item.id })), range.end, { className: 'range-field', dataKey: 'rangeEnd' });
+    const rangeLabel = (item) => item.title ? `${item.id} · ${item.title}` : item.name || item.id;
+    const startSelect = selectControl('起始章节', chapterRows.map((item) => ({ value: item.id, label: rangeLabel(item) })), range.start, { className: 'range-field', dataKey: 'rangeStart' });
+    const endSelect = selectControl('结束章节', chapterRows.map((item) => ({ value: item.id, label: rangeLabel(item) })), range.end, { className: 'range-field', dataKey: 'rangeEnd' });
     startSelect.dataset.focusKey = 'range-start'; endSelect.dataset.focusKey = 'range-end';
     startSelect.disabled = this.isBusy(); endSelect.disabled = this.isBusy();
     toolbar.append(field('范围起点', startSelect), field('范围终点', endSelect));
@@ -577,9 +653,132 @@ export class WorkbenchUI {
     return wrapper;
   }
 
+  renderImport() {
+    const state = this.state;
+    const preview = this.importPreviewSuppressed ? null : state.import_preview;
+    const wrapper = node('section', 'page-section import-page');
+    wrapper.append(heading('导入新书', '选择 TXT 或 DOCX，核对章节边界后登记到本机工作台。'));
+    wrapper.append(node('p', 'import-local-note', '在本机解析，点击开始配音后才分析与合成。'));
+    const form = node('section', 'import-workspace');
+    const choose = node('div', 'import-file-row');
+    const fileLabel = this.importFile ? `${this.importFile.name} · ${Math.ceil(this.importFile.size / 1024)} KB` : (preview?.filename || '尚未选择文件');
+    choose.append(node('div', 'import-file-copy', fileLabel));
+    choose.append(actionButton(this.importFile ? '更换文件' : '选择 TXT / DOCX', 'local_choose_import_file', { className: 'button' }));
+    form.append(choose);
+    if (this.importFile && this.importFile.size > 64 * 1024 * 1024) {
+      form.append(node('p', 'error-copy', '文件超过 64 MiB，请选择较小的 TXT 或 DOCX。'));
+    }
+    const previewButton = actionButton(this.importPending ? '正在读取并预览…' : '读取并预览', 'local_import_preview', {
+      className: 'button button-primary', disabled: this.isBusy() || !this.importFile || this.importFile.size > 64 * 1024 * 1024,
+    });
+    form.append(previewButton);
+    if (this.importError) form.append(node('p', 'error-copy', this.importError));
+    if (!preview && this.importPreviewSuppressed && state.import_preview) {
+      form.append(actionButton('恢复上次预览', 'local_restore_import_preview', { className: 'button button-quiet', disabled: this.isBusy() }));
+    }
+    if (state.busy?.kind === 'import_preview' || this.importPending) {
+      form.append(node('p', 'small-copy import-progress', state.busy?.label || '正在本机解析文件…'));
+    }
+    wrapper.append(form);
+
+    if (preview) {
+      const existingBook = Boolean(preview.existing_book);
+      const details = node('section', 'import-preview');
+      details.append(node('h2', '', '书名与章节预览'));
+      details.append(field('书名', this.importTitleInput({ disabled: existingBook || this.isBusy() }), existingBook ? '这份文件对应的书目已在本机登记。' : '登记时若名称重复，工作台会自动添加区分后缀。'));
+      if (existingBook) details.append(node('p', 'import-existing-note', `这份文件已登记，可直接使用已有书目${preview.existing_name ? `「${preview.existing_name}」` : ''}。`));
+      details.append(node('p', 'import-meta', `${preview.character_count ?? 0} 字 · ${preview.chapters?.length || 0} 个章节候选 · ${preview.encoding || 'DOCX 正文'}`));
+      if (preview.warnings?.length) {
+        const warnings = node('ul', 'import-warnings');
+        for (const warning of preview.warnings) warnings.append(node('li', '', warning));
+        details.append(warnings);
+      }
+      const preface = node('p', 'import-preface');
+      preface.append(node('span', '', '合并误识别标题只调整章节边界，原文与开头前言都会保留。'));
+      details.append(preface);
+      const layout = node('div', 'import-chapter-layout');
+      const list = node('div', 'import-chapter-list');
+      const chapters = this.importChapters(preview);
+      if (!chapters.length) list.append(emptyState('没有识别到章节标题', '你仍可登记文件；后续请先核对章节索引再开始制作。'));
+      for (const chapter of chapters) {
+        const row = node('article', `import-chapter${String(chapter.id) === this.importSelectedChapter ? ' is-selected' : ''}`);
+        const checkbox = node('input'); checkbox.type = 'checkbox'; checkbox.checked = this.importEnabledStarts.has(Number(chapter.start));
+        checkbox.dataset.importStart = String(chapter.start); checkbox.disabled = existingBook || this.isBusy() || Number(chapter.start) === Number(chapters[0]?.start); checkbox.setAttribute('aria-label', `将“${chapter.title || chapter.id}”作为章节起点`);
+        const select = node('button', 'import-chapter-title', chapter.title || chapter.id || '未命名章节');
+        select.type = 'button'; select.disabled = this.isBusy(); select.dataset.local = 'import_chapter'; select.dataset.chapterId = String(chapter.id || '');
+        const meta = node('span', 'import-chapter-meta', `${Number(chapter.characters || 0).toLocaleString()} 字`);
+        row.append(checkbox, select, meta); list.append(row);
+      }
+      const excerpt = node('section', 'import-excerpt');
+      excerpt.append(node('h3', '', '章节摘录'));
+      const active = chapters.find((chapter) => String(chapter.id) === this.importSelectedChapter) || chapters[0];
+      excerpt.append(node('p', 'import-excerpt-copy', active?.excerpt || '选择左侧章节查看摘录。'));
+      layout.append(list, excerpt); details.append(layout);
+      const headingSearch = node('div', 'import-heading-search');
+      const headingField = this.importHeadingInput();
+      if (!existingBook) {
+        headingSearch.append(field('新增章节标题', headingField, '输入原文中完整、独占一行的标题；查找按去除首尾空白后的整行精确匹配。'));
+        headingSearch.append(actionButton('查找原文标题', 'import_heading', {
+          className: 'button', disabled: this.isBusy() || !this.importHeadingDraft.trim(),
+        }));
+      }
+      const showMatches = this.importHeadingSearched && this.importHeadingSearchedFor === this.importHeadingDraft.trim();
+      const matches = showMatches && Array.isArray(preview.heading_matches) ? preview.heading_matches : [];
+      if (matches.length) {
+        const matchList = node('div', 'import-match-list');
+        for (const match of matches) {
+          const matchRow = node('article', 'import-match-row');
+          matchRow.append(node('div', '', match.title || '未命名标题'), node('span', 'import-chapter-meta', `${Number(match.characters || 0).toLocaleString()} 字`));
+          const added = this.importEnabledStarts.has(Number(match.start));
+          const add = actionButton(added ? '已加入章界' : '加入章节起点', 'noop', {
+            className: added ? 'button button-quiet' : 'button', disabled: added || this.isBusy(),
+            payload: { start: Number(match.start), chapter_id: String(match.id || ''), title: match.title || '', excerpt: match.excerpt || '', characters: Number(match.characters || 0) },
+          });
+          add.dataset.local = 'add_import_heading';
+          matchRow.append(add);
+          matchList.append(matchRow);
+        }
+        headingSearch.append(matchList);
+      } else if (showMatches) {
+        headingSearch.append(node('p', 'small-copy', '未找到独立成行的完整标题。当前章界草稿已保留。'));
+      }
+      details.append(headingSearch);
+      details.append(actionButton(existingBook ? '进入已有书籍' : '登记并进入制作', 'import_commit', {
+        className: 'button button-primary', disabled: this.isBusy() || !String(this.importTitleDraft || '').trim(),
+        payload: { preview_id: preview.preview_id },
+      }));
+      wrapper.append(details);
+    }
+    wrapper.append(actionButton('返回章节', 'local_page', { className: 'button button-quiet', payload: { page: 'chapters' } }));
+    return wrapper;
+  }
+
+  importTitleInput({ disabled = false } = {}) {
+    const input = node('input', 'text-input'); input.type = 'text'; input.value = this.importTitleDraft;
+    input.maxLength = 160; input.dataset.importTitle = 'true'; input.dataset.focusKey = 'import-title'; input.disabled = disabled; input.setAttribute('aria-label', '书名');
+    return input;
+  }
+
+  importHeadingInput() {
+    const input = node('input', 'text-input'); input.type = 'text'; input.value = this.importHeadingDraft;
+    input.maxLength = 240; input.disabled = this.isBusy(); input.dataset.importHeading = 'true'; input.dataset.focusKey = 'import-heading'; input.setAttribute('aria-label', '新增章节标题');
+    return input;
+  }
+
+  importChapters(preview) {
+    const chapters = Array.isArray(preview?.chapters) ? [...preview.chapters] : [];
+    const known = new Set(chapters.map((chapter) => Number(chapter.start)));
+    for (const match of preview?.heading_matches || []) {
+      const start = Number(match.start);
+      if (this.importEnabledStarts.has(start) && !known.has(start)) chapters.push(match);
+    }
+    return chapters.sort((a, b) => Number(a.start) - Number(b.start));
+  }
+
   renderChapterRow(chapter) {
     const row = node('div', `chapter-row${String(chapter.id) === String(this.selectedChapter) ? ' is-selected' : ''}`);
-    const open = node('button', 'button button-quiet chapter-title', chapter.name || chapter.title || chapter.id || '未命名章节');
+    const chapterLabel = chapter.title ? `${chapter.id} · ${chapter.title}` : chapter.name || chapter.id || '未命名章节';
+    const open = node('button', 'button button-quiet chapter-title', chapterLabel);
     open.type = 'button'; open.disabled = this.isBusy(); open.dataset.action = 'chapter'; open.dataset.payload = JSON.stringify({ chapter_id: chapter.id });
     row.append(open);
     const stages = node('div', 'chapter-stages');
@@ -945,6 +1144,21 @@ export class WorkbenchUI {
     if (local?.dataset.local === 'profile-toggle') {
       this.profileOpen = !this.profileOpen; this.renderPage(); return;
     }
+    if (local?.dataset.local === 'import_chapter') {
+      this.importSelectedChapter = String(local.dataset.chapterId || '');
+      this.renderPage(); return;
+    }
+    if (local?.dataset.local === 'add_import_heading') {
+      let match = {};
+      try { match = JSON.parse(local.dataset.payload || '{}'); } catch { match = {}; }
+      const start = Number(match.start);
+      if (Number.isInteger(start) && start >= 0) {
+        this.importEnabledStarts.add(start);
+        if (match.chapter_id) this.importSelectedChapter = String(match.chapter_id);
+        this.renderPage();
+      }
+      return;
+    }
     const profile = event.target.closest('[data-role-id]');
     if (profile) { this.selectedRole = profile.dataset.roleId; this.profileOpen = false; this.renderPage(); return; }
     const pageButton = event.target.closest('[data-page]');
@@ -955,6 +1169,29 @@ export class WorkbenchUI {
     try { payload = JSON.parse(button.dataset.payload || '{}'); } catch { payload = {}; }
     const action = button.dataset.action;
     if (action === 'local_page') { this.setPage(payload.page); return; }
+    if (action === 'local_choose_import_file') {
+      this.document.getElementById('import-file-input').click(); return;
+    }
+    if (action === 'local_restore_import_preview') {
+      this.importFile = null;
+      this.importPreviewSuppressed = false;
+      this.importError = '';
+      this.renderPage(); return;
+    }
+    if (action === 'local_import_preview') { this.runImportPreview(); return; }
+    if (action === 'import_heading') {
+      payload.preview_id = this.state?.import_preview?.preview_id || '';
+      payload.heading = String(this.importHeadingDraft || '').trim();
+      this.importHeadingSearched = false;
+    }
+    if (action === 'import_commit') {
+      const preview = this.state?.import_preview;
+      Object.assign(payload, buildImportCommitPayload(
+        preview?.preview_id || payload.preview_id,
+        preview?.existing_book ? (preview.existing_name || preview.title || this.importTitleDraft) : this.importTitleDraft,
+        preview?.existing_book ? [] : this.importEnabledStarts,
+      ));
+    }
     if (action === 'chapter') {
       this.selectedChapter = String(payload.chapter_id || '');
       this.selectedParagraph = '';
@@ -1000,6 +1237,12 @@ export class WorkbenchUI {
 
   onChange(event) {
     const target = event.target;
+    if (target.matches('[data-import-start]')) {
+      const start = Number(target.dataset.importStart);
+      if (target.checked) this.importEnabledStarts.add(start);
+      else this.importEnabledStarts.delete(start);
+      return;
+    }
     if (target.matches('[data-range-start], [data-range-end]')) {
       const start = this.content.querySelector('[data-range-start]')?.value || '';
       const end = this.content.querySelector('[data-range-end]')?.value || '';
@@ -1018,6 +1261,16 @@ export class WorkbenchUI {
 
   onInput(event) {
     const target = event.target;
+    if (target.matches('[data-import-title]')) {
+      this.importTitleDraft = target.value;
+      return;
+    }
+    if (target.matches('[data-import-heading]')) {
+      this.importHeadingDraft = target.value;
+      if (this.importHeadingDraft.trim() !== this.importHeadingSearchedFor) this.importHeadingSearched = false;
+      this.renderPage();
+      return;
+    }
     if (target.dataset?.draftKey) {
       const key = target.dataset.draftKey;
       const value = target.value;
@@ -1061,6 +1314,10 @@ export class WorkbenchUI {
   async runAction(action, payload = {}, { quiet = false, identity = null } = {}) {
     if (!this.state && action !== 'book') return;
     if (!quiet) this.clientError = '';
+    if (this.isImportBusy()) {
+      if (!quiet) this.setLiveStatus('新书正在处理，请等待导入操作完成。', true);
+      return;
+    }
     if (this.isBusy() && !BUSY_SAFE_ACTIONS.has(action)) {
       if (!quiet) this.setLiveStatus('当前任务运行中，请等待或先暂停任务。', true);
       return;
@@ -1069,7 +1326,22 @@ export class WorkbenchUI {
     this.stateEpoch += 1;
     this.pendingActionId = actionId;
     this.pendingActionName = action;
+    if (action === 'import_commit') {
+      this.importCommitAwaiting = {
+        previewId: payload.preview_id,
+        bookId: String(this.state?.import_preview?.book_id || ''),
+      };
+    } else if (action === 'import_heading') {
+      this.importHeadingAwaiting = String(payload.heading || '');
+      this.importHeadingSearched = false;
+      this.importHeadingSearchedFor = '';
+      this.importError = '';
+    }
     this.updatePlaybackControls();
+    if (['import_commit', 'import_heading'].includes(action) && this.page === 'import') {
+      this.syncBusyControls();
+      if (this.document?.getElementById) this.syncBooks(this.state || {});
+    }
     try {
       const context = identity || {
         bookId: this.content.dataset.bookId || this.state?.book_id || '',
@@ -1084,6 +1356,9 @@ export class WorkbenchUI {
       this.pendingActionId = 0;
       this.pendingActionName = '';
       this.updatePlaybackControls();
+      if ((action === 'import_commit' || action === 'import_heading') && this.document?.getElementById) this.syncBooks(this.state || {});
+      if (action === 'import_commit' && this.page === 'import' && !this.importCommitAwaiting && !this.isBusy()) this.renderPage();
+      if (action === 'import_heading' && this.page === 'import') this.renderPage();
       if (action === 'shutdown') {
         try { this.window?.chrome?.webview?.postMessage?.('audiobook-close-window'); } catch { /* Native close bridge is optional. */ }
       }
@@ -1092,17 +1367,123 @@ export class WorkbenchUI {
       this.stateEpoch += 1;
       this.pendingActionId = 0;
       this.pendingActionName = '';
+      if (action === 'import_commit') this.importCommitAwaiting = null;
+      if (action === 'import_heading') this.importHeadingAwaiting = '';
       if (action === 'shutdown') {
         this.shutdownRequested = false;
         this.schedulePoll();
       }
       this.clientError = error.message || (quiet ? '草稿保存失败。' : '操作失败。');
+      if (action === 'import_commit' || action === 'import_heading') this.importError = this.clientError;
       this.setLiveStatus(this.clientError, true);
       this.updatePlaybackControls();
+      if (this.page === 'import') this.renderPage();
+      if ((action === 'import_commit' || action === 'import_heading') && this.document?.getElementById) this.syncBooks(this.state || {});
     }
   }
 
-  isBusy() { return Boolean(this.state?.busy); }
+  async runImportPreview() {
+    if (this.isBusy()) {
+      this.setLiveStatus('当前任务运行中，完成后再读取新书。', true);
+      return;
+    }
+    const file = this.importFile;
+    if (!file) {
+      this.importError = '请先选择 TXT 或 DOCX 文件。';
+      this.renderPage();
+      return;
+    }
+    if (!file.size) {
+      this.importError = '文件为空，请选择有正文内容的 TXT 或 DOCX。';
+      this.renderPage();
+      return;
+    }
+    if (file.size > 64 * 1024 * 1024) {
+      this.importError = '文件超过 64 MiB，请选择较小的文件。';
+      this.renderPage();
+      return;
+    }
+    if (!/\.(txt|docx)$/i.test(file.name)) {
+      this.importError = '文件格式需为 TXT 或 DOCX。';
+      this.renderPage();
+      return;
+    }
+    const actionId = ++this.latestActionId;
+    this.stateEpoch += 1;
+    this.pendingActionId = actionId;
+    this.pendingActionName = 'import_preview';
+    this.importPending = true;
+    this.importError = '';
+    this.renderPage();
+    this.syncBooks(this.state || {});
+    try {
+      const state = await this.client.previewBook(file);
+      if (actionId !== this.latestActionId) { this.schedulePoll(); return; }
+      this.stateEpoch += 1;
+      this.applyState(state);
+      this.importPending = false;
+      this.pendingActionId = 0;
+      this.pendingActionName = '';
+      this.importError = state.error || '';
+      this.renderPage();
+      this.syncBooks(this.state || {});
+      this.schedulePoll();
+    } catch (error) {
+      if (actionId !== this.latestActionId) { this.schedulePoll(); return; }
+      this.stateEpoch += 1;
+      this.importPending = false;
+      this.pendingActionId = 0;
+      this.pendingActionName = '';
+      this.importError = error.message || '读取文件失败，请检查文件后重试。';
+      this.setLiveStatus(this.importError, true);
+      this.renderPage();
+      this.syncBooks(this.state || {});
+    }
+  }
+
+  observeImportCommitState(state) {
+    const pending = this.importCommitAwaiting;
+    if (!pending) return '';
+    if (state.busy) return 'pending';
+    if (state.error) {
+      this.importCommitAwaiting = null;
+      this.importError = String(state.error);
+      return 'failed';
+    }
+    if (!state.import_preview && pending.bookId && state.book_id === pending.bookId) {
+      this.importCommitAwaiting = null;
+      this.importFile = null;
+      this.importTitleDraft = '';
+      this.importEnabledStarts = new Set();
+      this.importPreviewId = '';
+      this.importHeadingDraft = '';
+      this.importHeadingSearched = false;
+      this.importHeadingSearchedFor = '';
+      this.importHeadingAwaiting = '';
+      this.importPreviewSuppressed = false;
+      this.importError = '';
+      if (this.page === 'import') this.setPage('chapters');
+      return 'complete';
+    }
+    return 'pending';
+  }
+
+  observeImportHeadingState(state) {
+    if (!this.importHeadingAwaiting || state.busy) return '';
+    if (state.error) {
+      this.importHeadingAwaiting = '';
+      this.importHeadingSearched = false;
+      this.importError = String(state.error);
+      return 'failed';
+    }
+    this.importHeadingSearched = true;
+    this.importHeadingSearchedFor = this.importHeadingAwaiting;
+    this.importHeadingAwaiting = '';
+    return 'complete';
+  }
+
+  isImportBusy() { return Boolean(this.importPending || this.importCommitAwaiting || this.importHeadingAwaiting || ['import_preview', 'import_commit', 'import_heading'].includes(this.state?.busy?.kind)); }
+  isBusy() { return Boolean(this.state?.busy || this.importPending || this.importCommitAwaiting || this.importHeadingAwaiting || ['import_commit', 'import_heading'].includes(this.pendingActionName)); }
   isMediaLocked() {
     return this.isBusy() || this.pendingActionName === 'stop' ||
       ['chapter_play', 'voice_play', 'revision_play'].includes(this.pendingActionName);

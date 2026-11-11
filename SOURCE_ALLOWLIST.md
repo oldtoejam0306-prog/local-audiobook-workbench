@@ -185,7 +185,9 @@
 - `test_whole_book_plan.py`
 - `test_whole_book_safety_audit.py`
 - `test_workbench_audio_revision.py`
+- `test_workbench_book_import.py`
 - `test_workbench_desktop.py`
+- `test_workbench_import_routing.py`
 - `test_workbench_job_store.py`
 - `test_workbench_real.py`
 - `test_workbench_real_control.py`
@@ -210,6 +212,7 @@
 - `whole_book_executor.py`
 - `whole_book_plan.py`
 - `workbench_audio_revision.py`
+- `workbench_book_import.py`
 - `workbench_desktop.py`
 - `workbench_job_store.py`
 - `workbench_real.py`

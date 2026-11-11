@@ -70,6 +70,27 @@ test('state and action requests use the session header and JSON contract', async
   assert.deepEqual(JSON.parse(calls[1].options.body), { book_id: 'book-a', action: 'book' });
 });
 
+test('book preview upload sends raw file bytes with encoded filename and session token', async () => {
+  const calls = [];
+  const file = { name: '风 起.txt', size: 12 };
+  const snapshot = { import_preview: { preview_id: 'preview-a' }, busy: { kind: 'import_preview' } };
+  const client = new frontend.WorkbenchClient({
+    token: 'test-session',
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      return { ok: true, status: 200, json: async () => snapshot };
+    },
+  });
+  assert.deepEqual(await client.previewBook(file), snapshot);
+  assert.equal(calls[0].url, '/api/books/preview');
+  assert.equal(calls[0].options.method, 'POST');
+  assert.equal(calls[0].options.body, file);
+  assert.equal(calls[0].options.headers['Content-Type'], 'application/octet-stream');
+  assert.equal(calls[0].options.headers['X-Book-Filename'], encodeURIComponent(file.name));
+  assert.equal(calls[0].options.headers['X-Workbench-Token'], 'test-session');
+  assert.equal(calls[0].options.cache, 'no-store');
+});
+
 test('backend error messages survive as actionable client errors', async () => {
   const client = new frontend.WorkbenchClient({
     token: 'test-session',
@@ -96,6 +117,159 @@ test('book and revision actions bind the form identity and revision chapter', ()
   });
   assert.deepEqual(frontend.bindActionIdentity('book', { book_id: 'book-b' }, { bookId: 'book-a' }), { book_id: 'book-b' });
   assert.deepEqual(frontend.bindActionIdentity('billing_reprice', { input_price: '2' }, { bookId: 'book-a' }), { input_price: '2' });
+  assert.deepEqual(frontend.bindActionIdentity('import_commit', { preview_id: 'p1' }, { bookId: 'old-book' }), { preview_id: 'p1' });
+  assert.deepEqual(frontend.bindActionIdentity('import_heading', { preview_id: 'p1', heading: '第十二章' }, { bookId: 'old-book' }), { preview_id: 'p1', heading: '第十二章' });
+  assert.deepEqual(frontend.buildImportCommitPayload('p1', ' 新书 ', [22, 4, 22, -1, 'x']), {
+    preview_id: 'p1', title: '新书', chapter_starts: [4, 22],
+  });
+  assert.deepEqual(frontend.buildImportCommitPayload('p1', '书名', new Set([14, 3])), {
+    preview_id: 'p1', title: '书名', chapter_starts: [3, 14],
+  });
+});
+
+test('import preview renders chapter controls and source text as plain text', () => {
+  class ElementStub {
+    constructor(tag) { this.tagName = tag; this.children = []; this.dataset = {}; this.attributes = {}; this._text = ''; this.disabled = false; this.className = ''; }
+    set textContent(value) { this._text = String(value); }
+    get textContent() { return this._text + this.children.map((child) => child.textContent || '').join(''); }
+    append(...items) { this.children.push(...items); }
+    setAttribute(name, value) { this.attributes[name] = String(value); }
+    querySelector(selector) {
+      const matches = (item) => selector.startsWith('[data-action=') && item.dataset?.action === selector.match(/"([^"]+)"/)?.[1];
+      const visit = (item) => { if (matches(item)) return item; for (const child of item.children || []) { const found = visit(child); if (found) return found; } return null; };
+      return visit(this);
+    }
+  }
+  const previousDocument = globalThis.document;
+  globalThis.document = { createElement: (tag) => new ElementStub(tag), createElementNS: (_ns, tag) => new ElementStub(tag) };
+  try {
+    const ui = Object.create(frontend.WorkbenchUI.prototype);
+    ui.state = {
+      busy: null,
+      import_preview: {
+        preview_id: 'preview-1', book_id: 'book-new', filename: 'novel.txt', title: '小说', source_sha256: 'a', text_sha256: 'b',
+        encoding: 'UTF-8', character_count: 1200, warnings: ['请核对章节边界'],
+        chapters: [{ id: 'c001', title: '第一章', start: 0, end: 18, characters: 18, excerpt: '<script>原文</script>' }],
+      },
+    };
+    ui.importFile = { name: 'novel.txt', size: 1200 };
+    ui.importTitleDraft = '小说'; ui.importHeadingDraft = ''; ui.importHeadingSearched = false;
+    ui.importEnabledStarts = new Set([0]); ui.importSelectedChapter = 'c001'; ui.importError = '';
+    ui.importPending = false; ui.pendingActionName = '';
+    const page = ui.renderImport();
+    assert.match(page.textContent, /在本机解析，点击开始配音后才分析与合成/);
+    assert.match(page.textContent, /第一章/);
+    assert.match(page.textContent, /18 字/);
+    assert.match(page.textContent, /原文/);
+    assert.match(page.textContent, /<script>原文<\/script>/);
+    assert.equal(page.querySelector('[data-action="import_commit"]').dataset.payload, JSON.stringify({ preview_id: 'preview-1' }));
+    assert.equal(page.querySelector('[data-action="import_heading"]').disabled, true);
+  } finally {
+    if (previousDocument === undefined) delete globalThis.document;
+    else globalThis.document = previousDocument;
+  }
+});
+
+test('already registered book preview offers direct selection without editable boundaries', () => {
+  class ElementStub {
+    constructor(tag) { this.tagName = tag; this.children = []; this.dataset = {}; this.attributes = {}; this._text = ''; this.disabled = false; this.className = ''; }
+    set textContent(value) { this._text = String(value); }
+    get textContent() { return this._text + this.children.map((child) => child.textContent || '').join(''); }
+    append(...items) { this.children.push(...items); }
+    setAttribute(name, value) { this.attributes[name] = String(value); }
+    querySelector(selector) {
+      const matches = (item) => selector.startsWith('[data-action=') && item.dataset?.action === selector.match(/"([^"]+)"/)?.[1];
+      const visit = (item) => { if (matches(item)) return item; for (const child of item.children || []) { const found = visit(child); if (found) return found; } return null; };
+      return visit(this);
+    }
+  }
+  const previousDocument = globalThis.document;
+  globalThis.document = { createElement: (tag) => new ElementStub(tag), createElementNS: (_ns, tag) => new ElementStub(tag) };
+  try {
+    const ui = Object.create(frontend.WorkbenchUI.prototype);
+    ui.state = { busy: null, import_preview: { preview_id: 'preview-existing', existing_book: true, existing_name: '已有书', filename: 'book.txt', title: '已有书', chapters: [] } };
+    ui.importTitleDraft = '已有书'; ui.importHeadingDraft = ''; ui.importHeadingSearched = false;
+    ui.importEnabledStarts = new Set(); ui.importSelectedChapter = ''; ui.importError = ''; ui.importPending = false; ui.pendingActionName = '';
+    const page = ui.renderImport();
+    assert.match(page.textContent, /这份文件已登记，可直接使用已有书目/);
+    assert.match(page.textContent, /进入已有书籍/);
+    assert.equal(page.querySelector('[data-action="import_heading"]'), null);
+    assert.equal(page.querySelector('[data-action="import_commit"]').disabled, false);
+  } finally {
+    if (previousDocument === undefined) delete globalThis.document;
+    else globalThis.document = previousDocument;
+  }
+});
+
+test('a found independent heading joins enabled boundaries in source offset order', () => {
+  const ui = Object.create(frontend.WorkbenchUI.prototype);
+  ui.importEnabledStarts = new Set([0, 42]);
+  const chapters = ui.importChapters({
+    chapters: [{ id: 'c1', title: '第一章', start: 0, end: 41, characters: 41 }],
+    heading_matches: [{ id: 'c2', title: '第二章', start: 42, end: 80, characters: 38 }],
+  });
+  assert.deepEqual(chapters.map((chapter) => [chapter.title, chapter.start]), [['第一章', 0], ['第二章', 42]]);
+});
+
+test('accepted async import failure preserves the preview title and boundary draft for retry', () => {
+  const ui = Object.create(frontend.WorkbenchUI.prototype);
+  const starts = new Set([0, 81]);
+  ui.importCommitAwaiting = { previewId: 'preview-a', bookId: 'book-new' };
+  ui.importTitleDraft = '已编辑书名'; ui.importEnabledStarts = starts; ui.importFile = { name: 'book.txt' };
+  ui.importError = ''; ui.page = 'import'; ui.setPage = (page) => { ui.page = page; };
+  assert.equal(ui.observeImportCommitState({ busy: { kind: 'import_commit' }, import_preview: { preview_id: 'preview-a' } }), 'pending');
+  assert.deepEqual([...ui.importEnabledStarts], [0, 81]);
+  const result = ui.observeImportCommitState({
+    busy: null, error: '登记失败，请检查目录权限。', book_id: 'old-book',
+    import_preview: { preview_id: 'preview-a' },
+  });
+  assert.equal(result, 'failed');
+  assert.equal(ui.page, 'import');
+  assert.equal(ui.importCommitAwaiting, null);
+  assert.equal(ui.importTitleDraft, '已编辑书名');
+  assert.equal(ui.importEnabledStarts, starts);
+  assert.equal(ui.importError, '登记失败，请检查目录权限。');
+});
+
+test('accepted async import completion clears the draft and returns to chapters only for its book', () => {
+  const ui = Object.create(frontend.WorkbenchUI.prototype);
+  const pages = [];
+  ui.importCommitAwaiting = { previewId: 'preview-b', bookId: 'book-new' };
+  ui.importTitleDraft = '新书'; ui.importEnabledStarts = new Set([0, 24]); ui.importFile = { name: 'novel.txt' };
+  ui.importPreviewId = 'preview-b'; ui.importHeadingDraft = '第十章'; ui.importHeadingSearched = true;
+  ui.importHeadingSearchedFor = '第十章'; ui.importError = ''; ui.importPreviewSuppressed = false;
+  ui.page = 'import'; ui.setPage = (page) => { pages.push(page); ui.page = page; };
+  assert.equal(ui.observeImportCommitState({ busy: { kind: 'import_commit' }, import_preview: { preview_id: 'preview-b' } }), 'pending');
+  assert.equal(ui.observeImportCommitState({ busy: null, error: '', book_id: 'book-new', import_preview: null }), 'complete');
+  assert.deepEqual(pages, ['chapters']);
+  assert.equal(ui.importTitleDraft, '');
+  assert.deepEqual([...ui.importEnabledStarts], []);
+  assert.equal(ui.importFile, null);
+  assert.equal(ui.importCommitAwaiting, null);
+});
+
+test('heading lookup waits for completed snapshot matches before showing results', () => {
+  const ui = Object.create(frontend.WorkbenchUI.prototype);
+  ui.importHeadingAwaiting = '第十二章'; ui.importHeadingSearched = false; ui.importHeadingSearchedFor = '';
+  assert.equal(ui.observeImportHeadingState({ busy: { kind: 'import_heading' }, import_preview: { heading_matches: [] } }), '');
+  assert.equal(ui.importHeadingSearched, false);
+  assert.equal(ui.observeImportHeadingState({ busy: null, error: '', import_preview: { heading_matches: [] } }), 'complete');
+  assert.equal(ui.importHeadingSearched, true);
+  assert.equal(ui.importHeadingSearchedFor, '第十二章');
+  assert.equal(ui.importHeadingAwaiting, '');
+});
+
+test('import busy state blocks other actions including otherwise safe billing refresh', async () => {
+  const calls = [];
+  const ui = Object.create(frontend.WorkbenchUI.prototype);
+  ui.state = { busy: { kind: 'import_preview', label: '正在解析' } };
+  ui.importPending = false; ui.importCommitAwaiting = null; ui.importHeadingAwaiting = '';
+  ui.latestActionId = 0; ui.clientError = '';
+  ui.client = { action: async (...args) => { calls.push(args); return {}; } };
+  ui.setLiveStatus = () => {};
+  await ui.runAction('billing_refresh');
+  assert.deepEqual(calls, []);
+  assert.equal(ui.latestActionId, 0);
 });
 
 test('dynamic text assignment uses textContent and never parses book text as markup', () => {
@@ -136,7 +310,7 @@ test('chapter page renders a non-empty chapter range without browser globals', (
       book_id: 'book-a', book_name: '本机书稿', busy: null,
       range: { start: 'c1', end: 'c2' },
       chapters: [
-        { id: 'c1', status: '可试听', stages: ['analyze', 'render'], audio: false, history: true },
+        { id: 'c1', title: '原始章节标题', status: '可试听', stages: ['analyze', 'render'], audio: false, history: true },
         { id: 'c2', status: '待读取进度', stages: [], audio: false, history: false },
         { id: 'c3', status: '范围外', stages: [], audio: false },
       ],
@@ -146,6 +320,7 @@ test('chapter page renders a non-empty chapter range without browser globals', (
     assert.match(page.textContent, /章节制作/);
     assert.match(page.textContent, /读取进度/);
     assert.equal((page.textContent.match(/历史成品/g) || []).length, 1);
+    assert.match(page.textContent, /原始章节标题/);
     assert.match(page.textContent, /对白分析/);
     assert.match(page.textContent, /语音生成/);
     assert.doesNotMatch(page.textContent, /范围外/);

@@ -31,18 +31,32 @@ def _claim(value):
 
 
 class WorkbenchService:
-    def __init__(self, *, runtime=None, books=None, selection=None, player=None):
+    def __init__(self, *, runtime=None, books=None, selection=None, player=None, importer=None):
         if runtime is None:
             import workbench_real_v2_runtime as runtime
         self.runtime = runtime
         self.root = Path(runtime.ROOT)
+        if importer is None:
+            from workbench_book_import import BookImporter
+            importer = BookImporter(self.root)
+        self.importer = importer
         self.books = dict(core.existing.BOOKS if books is None else books)
+        from workbench_book_import import merge_book_names
+        imported_books = self.importer.list_books()
+        self._import_book_ids = {entry['book_id'] for entry in imported_books}
+        self._chapter_titles = {
+            (entry['book_id'], chapter['chapter_id']): chapter['title']
+            for entry in imported_books for chapter in entry.get('chapters', [])
+        }
+        self.books = merge_book_names(self.books, imported_books)
+        core.existing.BOOKS.update(self.books)
         self.selection = selection or core.Selection()
         self.player = player or AudioPlayback(play_fn=lambda _path: None, stop_fn=lambda: None)
         self._lock = threading.RLock()
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix='workbench-operation')
         self._generation = 0
         self._closed = False
+        self._upload_reserved = False
         self._roles = {}
         self._role_states = {}
         self._chapter_states = {}
@@ -58,6 +72,7 @@ class WorkbenchService:
             'books': [{'id': identity, 'name': name} for name, identity in self.books.items()],
             'book_id': None, 'book_name': '', 'chapters': [],
             'range': {'start': '', 'end': ''}, 'profiles': [], 'selected_role': 'narrator',
+            'import_preview': None,
             'busy': None, 'status': '选择已登记书籍，读取章节索引。', 'error': '',
             'editor': None, 'playback': None, 'diagnostics': None,
             'billing': {'loading': False, 'rows': [], 'summary': {},
@@ -97,7 +112,7 @@ class WorkbenchService:
         return list(self.selection.chapters[first:last + 1])
 
     def _submit(self, kind, label, work, apply=None, discard=None):
-        if self._state['busy']:
+        if self._state['busy'] or self._upload_reserved:
             raise RuntimeError('当前操作正在进行，请等待完成。')
         generation = self._generation
         self._state.update(busy={'kind': kind, 'label': label}, status=label, error='')
@@ -127,6 +142,69 @@ class WorkbenchService:
             self._state['busy'] = None
             raise
 
+    def prepare_import(self, path, original_name):
+        """Queue local parsing; caller owns the staged file until background completion."""
+        with self._lock:
+            if self._closed:
+                raise RuntimeError('工作台已关闭。')
+            if self._upload_reserved:
+                raise RuntimeError('书籍文件正在上传，请稍候。')
+            if self._state['busy']:
+                raise RuntimeError('当前操作正在进行，请等待完成。')
+            def work():
+                try:
+                    return self.importer.preview(path, original_name)
+                finally:
+                    Path(path).unlink(missing_ok=True)
+            def apply(summary):
+                summary = dict(summary)
+                book_id = summary.get('book_id')
+                existing_name = next((name for name, identity in self.books.items()
+                                      if identity == book_id), None)
+                if existing_name is not None and book_id not in self._import_book_ids:
+                    summary['existing_book'] = True
+                    summary['existing_name'] = existing_name
+                else:
+                    summary['existing_book'] = False
+                self._state['import_preview'] = summary
+            self._submit('import_preview', '正在本地解析书籍…', work, apply)
+            return self.snapshot()
+
+    def _import_heading(self, payload):
+        preview_id, heading = payload.get('preview_id'), payload.get('heading')
+        preview = self._state.get('import_preview')
+        if (not isinstance(preview_id, str) or not isinstance(heading, str)
+                or not preview or preview.get('preview_id') != preview_id):
+            raise ValueError('导入预览或章节标题无效。')
+        def apply(matches):
+            current = self._state.get('import_preview')
+            if current and current.get('preview_id') == preview_id:
+                current['heading_matches'] = matches[:100]
+        self._submit('import_heading', '正在匹配章节标题…',
+                     lambda: self.importer.find_heading(preview_id, heading), apply)
+
+    def reserve_import_upload(self):
+        with self._lock:
+            if self._closed or self._state['busy'] or self._upload_reserved:
+                return False
+            self._upload_reserved = True
+            return True
+
+    def cancel_import_upload(self):
+        with self._lock:
+            self._upload_reserved = False
+
+    def accept_import_upload(self, path, original_name):
+        with self._lock:
+            if not self._upload_reserved or self._closed or self._state['busy']:
+                raise RuntimeError('当前操作状态已变化，请重试。')
+            self._upload_reserved = False
+            try:
+                return self.prepare_import(path, original_name)
+            except Exception:
+                Path(path).unlink(missing_ok=True)
+                raise
+
     def action(self, name, payload):
         with self._lock:
             if self._closed:
@@ -144,6 +222,8 @@ class WorkbenchService:
                 'stop': lambda _p: self._stop(), 'billing_refresh': self._billing_refresh,
                 'billing_reprice': self._billing_reprice, 'correction_save': self._save_correction,
                 'diagnostics': self._diagnostics,
+                'import_commit': self._import_commit, 'import_clear': self._import_clear,
+                'import_heading': self._import_heading,
                 'shutdown': lambda _p: self.on_shutdown(),
             }
             if name not in handlers:
@@ -159,7 +239,7 @@ class WorkbenchService:
                     raise ValueError('校听章节已变化，请重新载入段落。')
             safe_during_work = {'stop', 'playback_started', 'pause',
                                 'billing_refresh', 'billing_reprice'}
-            if self._state['busy'] and name not in safe_during_work:
+            if (self._state['busy'] or self._upload_reserved) and name not in safe_during_work:
                 raise RuntimeError('当前操作正在进行，请等待完成。')
             handlers[name](payload)
             return self.snapshot()
@@ -181,6 +261,69 @@ class WorkbenchService:
             self._state.update(book_id=book, book_name=name, chapters=[], editor=None,
                                profiles=[], range={'start': '', 'end': ''}, diagnostics=None)
         self._submit('book', '正在读取本书人物档案…', self._read_profiles, self._apply_profiles)
+
+    def _import_clear(self, _payload):
+        self._state['import_preview'] = None
+
+    def _import_commit(self, payload):
+        preview_id = payload.get('preview_id')
+        title = payload.get('title')
+        chapter_starts = payload.get('chapter_starts')
+        if not isinstance(preview_id, str) or not isinstance(title, str):
+            raise ValueError('preview_id与title必须是字符串。')
+        preview = self._state.get('import_preview')
+        if not preview or preview.get('preview_id') != preview_id:
+            raise ValueError('导入预览已失效，请重新预览。')
+        generation = self._generation
+        def work():
+            with self._lock:
+                if self._closed or generation != self._generation:
+                    raise RuntimeError('工作台状态已变化，导入未提交。')
+            if preview.get('existing_book'):
+                entry = {'book_id': preview['book_id'],
+                         'display_name': preview['existing_name'],
+                         'chapters': preview.get('chapters', [])}
+                index_name = preview['existing_name']
+            else:
+                entry = self.importer.commit(preview_id, title, chapter_starts)
+                from workbench_book_import import merge_book_names
+                temporary_books = merge_book_names(self.books, [entry])
+                index_name = next(label for label, identity in temporary_books.items()
+                                  if identity == entry['book_id'])
+                registry_before = dict(core.existing.BOOKS)
+                core.existing.BOOKS.update(temporary_books)
+            try:
+                ids = self.selection.load(index_name)
+            except Exception:
+                if not preview.get('existing_book'):
+                    core.existing.BOOKS.clear()
+                    core.existing.BOOKS.update(registry_before)
+                raise
+            return entry, ids
+        def apply(result):
+            entry, ids = result
+            book_id = entry['book_id']
+            if not preview.get('existing_book'):
+                from workbench_book_import import merge_book_names
+                self.books = merge_book_names(self.books, [entry])
+                self._chapter_titles.update({(book_id, chapter['chapter_id']): chapter['title']
+                                             for chapter in entry.get('chapters', [])})
+            name = next(name for name, identity in self.books.items() if identity == book_id)
+            core.existing.BOOKS.update(self.books)
+            self._stop()
+            self._roles = {}
+            self._executor = None
+            self._state.update(book_id=book_id, book_name=name,
+                               books=[{'id': identity, 'name': label}
+                                      for label, identity in self.books.items()],
+                               chapters=[{'id': cid, **({'title': self._chapter_titles[(book_id, cid)]}
+                                                       if (book_id, cid) in self._chapter_titles else {}),
+                                          'status': '待读取进度', 'stages': [], 'audio': False,
+                                          'history': False, 'diagnostics': None}
+                                         for cid in ids],
+                               range={'start': ids[0] if ids else '', 'end': ids[0] if ids else ''},
+                               profiles=[], editor=None, import_preview=None, diagnostics=None)
+        self._submit('import_commit', '正在登记并读取新书索引…', work, apply)
 
     def _read_profiles(self):
         book = self._book()
@@ -274,7 +417,9 @@ class WorkbenchService:
         self._book()
         def apply(ids):
             self._state['chapters'] = [self._chapter_states.get((self._book(), cid), {
-                'id': cid, 'status': '待读取进度', 'stages': [], 'audio': False,
+                'id': cid, **({'title': self._chapter_titles[(self._book(), cid)]}
+                              if (self._book(), cid) in self._chapter_titles else {}),
+                'status': '待读取进度', 'stages': [], 'audio': False,
                 'history': False, 'diagnostics': None}) for cid in ids]
             old = self._state['range']
             self._state['range'] = {key: old.get(key) if old.get(key) in ids else ids[0]
@@ -295,7 +440,9 @@ class WorkbenchService:
             self._chapter_states[(self._book(), row['chapter_id'])] = {
                 'id': row['chapter_id'], 'status': status, 'stages': row['completed_stages'],
                 'audio': bool(row.get('audio_path')), 'history': row.get('audio_version') == 'historical',
-                'diagnostics': row.get('diagnostics')}
+                'diagnostics': row.get('diagnostics'),
+                **({'title': self._chapter_titles[(self._book(), row['chapter_id'])]}
+                   if (self._book(), row['chapter_id']) in self._chapter_titles else {})}
         self._state['chapters'] = [self._chapter_states.get((self._book(), row['id']), row)
                                     for row in self._state['chapters']]
 

@@ -9,7 +9,9 @@ from pathlib import Path
 import re
 import secrets
 import stat
-from urllib.parse import parse_qs, urlsplit
+import tempfile
+import time
+from urllib.parse import parse_qs, unquote_to_bytes, urlsplit
 
 
 MAX_BODY_BYTES = 256 * 1024
@@ -24,6 +26,9 @@ _STATIC_FILES = {
 
 class WorkbenchConflict(Exception):
     """Raised by the service when an action conflicts with current state."""
+
+
+MAX_BOOK_UPLOAD_BYTES = 64 * 1024 * 1024
 
 
 def _response_headers(handler, content_type=None):
@@ -261,12 +266,16 @@ def make_server(service, port=0, token=None, static_root=None):
             if not self._check_request_origin():
                 return
             parsed = urlsplit(self.path)
-            if parsed.path != '/api/action':
+            if parsed.path not in ('/api/action', '/api/books/preview'):
                 self._json_error(404, 'not_found', '请求路径不存在。')
                 return
             if not self._authorized_header():
                 return
+            if parsed.path == '/api/books/preview':
+                self._post_book_preview()
+                return
             if self.headers.get('Transfer-Encoding'):
+                self.close_connection = True
                 self._json_error(400, 'invalid_body', '不支持分块请求体。')
                 return
             length_headers = self.headers.get_all('Content-Length', [])
@@ -311,6 +320,86 @@ def make_server(service, port=0, token=None, static_root=None):
                 self._json_error(400, 'invalid_action', str(exc) or '操作参数无效。')
             except Exception:
                 self._json_error(500, 'service_error', '执行工作台操作失败。')
+
+        def _post_book_preview(self):
+            if self.headers.get('Transfer-Encoding'):
+                self.close_connection = True
+                self._json_error(400, 'invalid_body', '不支持分块请求体。')
+                return
+            filenames = self.headers.get_all('X-Book-Filename', [])
+            if len(filenames) != 1:
+                self.close_connection = True
+                self._json_error(400, 'invalid_filename', '必须提供唯一的X-Book-Filename。')
+                return
+            try:
+                if re.search(r'%(?![0-9a-fA-F]{2})', filenames[0]):
+                    raise ValueError()
+                filename = unquote_to_bytes(filenames[0]).decode('utf-8')
+                if (not filename or '/' in filename or '\\' in filename or filename in ('.', '..')
+                        or ':' in filename or any(ord(char) < 32 for char in filename)
+                        or Path(filename).name != filename or Path(filename).suffix.lower() not in ('.txt', '.docx')):
+                    raise ValueError()
+            except (UnicodeDecodeError, ValueError):
+                self.close_connection = True
+                self._json_error(400, 'invalid_filename', '文件名必须是UTF-8编码的.txt或.docx basename。')
+                return
+            lengths = self.headers.get_all('Content-Length', [])
+            try:
+                if len(lengths) != 1 or not lengths[0].isdecimal():
+                    raise ValueError()
+                length = int(lengths[0])
+                if not 1 <= length <= MAX_BOOK_UPLOAD_BYTES:
+                    self.close_connection = True
+                    self._json_error(413 if length > MAX_BOOK_UPLOAD_BYTES else 400,
+                                     'body_too_large' if length > MAX_BOOK_UPLOAD_BYTES else 'invalid_body',
+                                     '书籍文件需为1至64MiB。')
+                    return
+            except ValueError:
+                self.close_connection = True
+                self._json_error(400, 'invalid_body', 'Content-Length无效或重复。')
+                return
+            service = self.server.workbench_service
+            if self.headers.get_content_type() != 'application/octet-stream':
+                self.close_connection = True
+                self._json_error(415, 'invalid_body', '请求体必须是原始文件字节流。')
+                return
+            if not service.reserve_import_upload():
+                self.close_connection = True
+                self._json_error(409, 'conflict', '当前操作正在进行，请等待完成。')
+                return
+            temporary = None
+            deadline = time.monotonic() + 15.0
+            received = 0
+            try:
+                directory = Path(service.root) / 'book-import-uploads'
+                directory.mkdir(parents=True, exist_ok=True)
+                fd, temporary = tempfile.mkstemp(prefix='upload-', suffix=Path(filename).suffix.lower(), dir=directory)
+                with os.fdopen(fd, 'wb') as output:
+                    while received < length:
+                        remaining_time = deadline - time.monotonic()
+                        if remaining_time <= 0:
+                            raise TimeoutError('上传超时。')
+                        self.connection.settimeout(min(5.0, remaining_time))
+                        block = self.rfile.read(min(256 * 1024, length - received))
+                        if not block:
+                            raise ValueError('请求体长度不完整。')
+                        output.write(block)
+                        received += len(block)
+                if received != length:
+                    raise ValueError('请求体长度不完整。')
+                service.accept_import_upload(temporary, filename)
+                self._send_json(202, service.snapshot())
+            except (OSError, ValueError, TimeoutError, ConnectionError) as exc:
+                if temporary:
+                    Path(temporary).unlink(missing_ok=True)
+                service.cancel_import_upload()
+                self.close_connection = True
+                self._json_error(400, 'invalid_body', str(exc) or '上传失败。')
+            except Exception:
+                if temporary:
+                    Path(temporary).unlink(missing_ok=True)
+                service.cancel_import_upload()
+                self._json_error(500, 'service_error', '读取导入文件失败。')
 
     server = ThreadingHTTPServer(('127.0.0.1', port), Handler)
     server.daemon_threads = True

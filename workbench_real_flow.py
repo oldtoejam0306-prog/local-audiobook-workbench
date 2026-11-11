@@ -25,6 +25,11 @@ ui = _Registry()
 
 
 def index_request(action, book, chapter=None, runner=console.ssh_python):
+    from workbench_book_import import BookImporter
+    from workbench_real_v2_runtime import ROOT
+    importer = BookImporter(ROOT)
+    if any(entry['book_id'] == book for entry in importer.list_books()):
+        return importer.query(action, book, chapter)
     if book not in books().values() or action not in ('list', 'prepare'):
         raise ValueError('书籍未登记或请求无效')
     if action == 'prepare':

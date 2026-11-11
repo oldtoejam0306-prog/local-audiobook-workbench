@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from workbench_web_state import WorkbenchService, _digest
 import workbench_real_v2_ui as core
+from workbench_book_import import BookImporter
 
 VALID_BOOK_ID = 'book-0123456789abcdefabcd'
 
@@ -43,9 +44,32 @@ class FakeSelection:
         self.frozen = ()
 
     def load(self, name):
-        self.book = {'Book A':'book-a', 'Book B':'book-b'}[name]
+        self.book = {'Book A':'book-a', 'Book B':'book-b', 'Imported':'book-0123456789abcdefabcd'}[name]
         self.chapters = ('c001', 'c002')
         return self.chapters
+
+
+class FakeImporter:
+    def __init__(self):
+        self.commits = []
+    def list_books(self):
+        return []
+    def preview(self, path, name):
+        return {'preview_id':'preview-1', 'book_id':'book-0123456789abcdefabcd', 'filename':name,
+                'title':'Imported', 'chapters':[{'id':'c001','title':'Chapter 1'}]}
+    def find_heading(self, preview_id, heading):
+        return [{'id':'c002','title':heading,'start':10,'end':20,'characters':10,'excerpt':'x'}]
+    def commit(self, preview_id, title, starts):
+        self.commits.append((preview_id, title, starts))
+        zero = '0' * 64
+        identity = 'book-0123456789abcdefabcd'
+        return {'book_id':identity, 'display_name':'Imported',
+                'chapters':[{'chapter_id':'c001','title':'Chapter 1'}],
+                'source_sha256':zero, 'text_sha256':zero, 'index_sha256':zero,
+                'snapshot':{'book_id':identity, 'source_sha256':zero, 'text_sha256':zero,
+                            'script_sha256':zero, 'cast_sha256':zero},
+                'index_workspace':'book-imports/' + zero[:32] + '/index/workspace',
+                'import_dir':'book-imports/' + zero[:32]}
 
     def preview_range(self, *args):
         self.frozen = args
@@ -93,8 +117,10 @@ class WorkbenchWebStateTests(unittest.TestCase):
         runtime = SimpleNamespace(ROOT=self.root)
         self.selection = FakeSelection()
         self.player = FakePlayer()
+        self.importer = FakeImporter()
         self.service = WorkbenchService(runtime=runtime, books={'Book A':'book-a', 'Book B':'book-b'},
-                                        selection=self.selection, player=self.player)
+                                        selection=self.selection, player=self.player,
+                                        importer=self.importer)
         self.service._state.update(book_id='book-a', book_name='Book A')
         self.selection.book = 'book-a'
         self.selection.chapters = ('c001', 'c002')
@@ -106,6 +132,82 @@ class WorkbenchWebStateTests(unittest.TestCase):
     def wait_idle(self):
         self.assertTrue(wait_for(lambda: self.service.snapshot()['busy'] is None),
                         self.service.snapshot())
+
+    def test_import_preview_heading_and_explicit_commit_select_book(self):
+        staged = self.root / 'upload.txt'; staged.write_text('local text', encoding='utf-8')
+        self.service.prepare_import(staged, 'novel.txt')
+        self.wait_idle()
+        self.assertEqual(self.service.snapshot()['import_preview']['preview_id'], 'preview-1')
+        action(self.service, 'import_heading', {'preview_id':'preview-1','heading':'Chapter 2'})
+        self.wait_idle()
+        self.assertEqual(self.service.snapshot()['import_preview']['heading_matches'][0]['id'], 'c002')
+        action(self.service, 'import_commit', {'preview_id':'preview-1','title':'Imported',
+                                               'chapter_starts':[0]})
+        self.wait_idle()
+        state = self.service.snapshot()
+        self.assertEqual(state['book_id'], 'book-0123456789abcdefabcd')
+        self.assertEqual(state['book_name'], 'Imported')
+        self.assertIsNone(state['import_preview'])
+        self.assertEqual(self.importer.commits, [('preview-1','Imported',[0])])
+        self.assertIn('book-0123456789abcdefabcd', core.existing.BOOKS.values())
+
+    def test_real_importer_commit_loads_its_local_index_without_private_paths_in_state(self):
+        importer = BookImporter(self.root)
+        selection = core.Selection(request=lambda action_name, book_id, chapter=None:
+                                   importer.query(action_name, book_id, chapter))
+        service = WorkbenchService(runtime=SimpleNamespace(ROOT=self.root), books={},
+                                   selection=selection, importer=importer)
+        staged = self.root / 'uploaded.txt'
+        staged.write_text('第一章 开始\n这是本地导入的正文。\n第二章 继续\n第二段正文。\n', encoding='utf-8')
+        service.prepare_import(staged, '本地书.txt')
+        self.assertTrue(wait_for(lambda: service.snapshot()['busy'] is None))
+        summary = service.snapshot()['import_preview']
+        self.assertEqual(summary['filename'], '本地书.txt')
+        service.action('import_commit', {'preview_id':summary['preview_id'],
+                                         'title':'本地确认书名', 'chapter_starts':None})
+        self.assertTrue(wait_for(lambda: service.snapshot()['busy'] is None))
+        state = service.snapshot()
+        self.assertEqual(state['book_id'], summary['book_id'])
+        self.assertEqual(state['book_name'], '本地确认书名')
+        self.assertEqual(state['chapters'][0]['id'], 'c001')
+        self.assertEqual(state['chapters'][0]['title'], '第一章 开始')
+        self.assertEqual(importer.query('list', summary['book_id'])['chapters'], ['c001', 'c002'])
+        self.assertNotIn('import_dir', repr(state))
+        self.assertNotIn('index_workspace', repr(state))
+        service.close()
+
+    def test_matching_existing_remote_book_reuses_its_old_index_without_catalog_commit(self):
+        self.importer.preview = lambda _path, name: {
+            'preview_id':'preview-old', 'book_id':'book-a', 'filename':name,
+            'title':'same raw source', 'chapters':[{'id':'c001','title':'New local title'}]}
+        staged = self.root / 'old-source.txt'; staged.write_text('same source', encoding='utf-8')
+        self.service.prepare_import(staged, 'same.txt')
+        self.wait_idle()
+        preview = self.service.snapshot()['import_preview']
+        self.assertTrue(preview['existing_book'])
+        self.assertEqual(preview['existing_name'], 'Book A')
+        action(self.service, 'import_commit', {'preview_id':'preview-old', 'title':'Ignored title'})
+        self.wait_idle()
+        state = self.service.snapshot()
+        self.assertEqual(state['book_id'], 'book-a')
+        self.assertEqual(state['book_name'], 'Book A')
+        self.assertEqual(self.importer.commits, [])
+        self.assertEqual(self.selection.book, 'book-a')
+
+    def test_upload_reservation_blocks_state_changing_actions_until_cancelled(self):
+        self.assertTrue(self.service.reserve_import_upload())
+        with self.assertRaisesRegex(RuntimeError, '正在进行'):
+            self.service.action('book', {'book_id':'book-b'})
+        with self.assertRaisesRegex(RuntimeError, '正在进行'):
+            action(self.service, 'execute')
+        with self.assertRaisesRegex(RuntimeError, '正在进行'):
+            self.service.action('shutdown', {})
+        with self.assertRaisesRegex(RuntimeError, '正在进行'):
+            self.service.action('import_clear', {})
+        self.service.cancel_import_upload()
+        action(self.service, 'book', {'book_id':'book-b'})
+        self.wait_idle()
+        self.assertEqual(self.service.snapshot()['book_id'], 'book-b')
 
     def test_async_submit_returns_busy_without_blocking_and_rejects_second_work(self):
         entered, release, finished = threading.Event(), threading.Event(), threading.Event()

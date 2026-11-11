@@ -46,3 +46,7 @@ desktop/bin/
 desktop/obj/
 desktop-webview2/
 desktop-service-startup.log
+book-imports/
+book-import-uploads/
+imported-books.json
+.book-import.lock

@@ -15,11 +15,7 @@ import threading
 ROOT=Path(os.environ['AUDIOBOOK_WORKBENCH_ROOT']).expanduser() if os.environ.get('AUDIOBOOK_WORKBENCH_ROOT') else release_config.local_workbench_root()
 
 def registered_books():
-    books=release_config.section('workbench').get('books',[])
-    if not isinstance(books,list):raise ValueError('workbench.books must be a list')
-    return {item['display_name']:item['book_id'] for item in books
-            if isinstance(item,dict) and isinstance(item.get('display_name'),str)
-            and isinstance(item.get('book_id'),str)}
+    return {book['display_name']: book['book_id'] for book in existing.registry()}
 
 def narrator_for(name,assignments=None):
  path=Path(assignments) if assignments else console.ROOT/'assignments.json'

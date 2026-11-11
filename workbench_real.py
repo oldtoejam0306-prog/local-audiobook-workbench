@@ -67,6 +67,15 @@ def registry() -> list[dict]:
                 raise ValueError("invalid or duplicate workbench chapter id")
             chapter_ids.add(chapter_id)
         checked.append(book)
+    from workbench_book_import import BookImporter, merge_book_names
+    imported = BookImporter(release_config.local_workbench_root()).list_books()
+    names = merge_book_names({book['display_name']: book['book_id'] for book in checked}, imported)
+    existing_ids = {book['book_id'] for book in checked}
+    imported_by_id = {book['book_id']: book for book in imported}
+    for name, book_id in names.items():
+        if book_id not in existing_ids:
+            checked.append({'book_id': book_id, 'display_name': name,
+                            'chapters': imported_by_id[book_id]['chapters']})
     return checked
 
 

@@ -22,6 +22,7 @@
       </nav>
       <div class="topbar-tools">
         <label class="book-control" for="book-select"><span>当前书籍</span><select id="book-select" aria-label="选择书籍"><option value="">选择书籍</option></select></label>
+        <button class="button button-subtle" id="import-book-button" type="button">导入新书</button>
         <button class="icon-button" id="theme-toggle" type="button" aria-label="切换浅色或深色主题" title="切换主题">
           <svg class="theme-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.2 15.1A8.6 8.6 0 0 1 8.9 3.8 8.8 8.8 0 1 0 20.2 15.1Z"/></svg>
         </button>
@@ -33,6 +34,7 @@
     <div class="workspace">
       <main class="main-area" id="main-area">
         <div class="live-status" id="live-status" role="status" aria-live="polite">正在连接本机工作台…</div>
+        <input id="import-file-input" class="visually-hidden" type="file" accept=".txt,.docx,text/plain,application/vnd.openxmlformats-officedocument.wordprocessingml.document" tabindex="-1" aria-hidden="true">
         <div id="page-content" tabindex="-1"></div>
       </main>
     </div>

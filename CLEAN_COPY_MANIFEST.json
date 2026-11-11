@@ -2,8 +2,8 @@
   "files": [
     {
       "path": ".gitignore",
-      "size_bytes": 644,
-      "sha256": "2a1c9817137873753e907500c2861282f7c0032f929aec026b5fc9cb021b73dc"
+      "size_bytes": 721,
+      "sha256": "0c89c13636a1a14d6f0d4e5491e90ac94c68f1307a47e7ce2a62d267ec086c22"
     },
     {
       "path": ".impeccable/design.json",
@@ -22,8 +22,8 @@
     },
     {
       "path": "MATERIALS.md",
-      "size_bytes": 7111,
-      "sha256": "08382c7c37dc1b789e2ddfa96fdb03268a8a132136c4d2b08b366938a7fb0785"
+      "size_bytes": 8294,
+      "sha256": "9c6a0f994639be753fcb931f01a5489897daa2aa53659fd9a97826dad3f76d28"
     },
     {
       "path": "NOTICE",
@@ -32,13 +32,13 @@
     },
     {
       "path": "README.md",
-      "size_bytes": 19526,
-      "sha256": "f4fe2086597011e719a6fea3eaabbe756bf2fc6aa62eedc5bdc0b4b621e943a7"
+      "size_bytes": 21667,
+      "sha256": "5b39bfa2eac98a1a699de92535cb6a23fee34245f10fdac22ab8facf906a2f62"
     },
     {
       "path": "SOURCE_ALLOWLIST.md",
-      "size_bytes": 7417,
-      "sha256": "0342c34ada2b45e9f5ead88164b7b24086886f7bc7dbcbc8648a7e7aaf9a72c4"
+      "size_bytes": 7520,
+      "sha256": "c0e2975f9d933489dda27732cb4415200fdc29a0ef50e46d08bbeb26a1f3b125"
     },
     {
       "path": "THIRD_PARTY_NOTICES.md",
@@ -916,9 +916,19 @@
       "sha256": "7d98e0509b2b9e4a9a0d4025a81ef10e45f9039298d22829d3e5fbfb5a6d3030"
     },
     {
+      "path": "test_workbench_book_import.py",
+      "size_bytes": 10313,
+      "sha256": "51cae131452ef05aa344232fd13e5c4e14eb6a70e4529a9bdc9b92f30a0a57e6"
+    },
+    {
       "path": "test_workbench_desktop.py",
       "size_bytes": 8243,
       "sha256": "1c68a0d669fd6459b63c6fd89d9f5a1517f3458ab974a457a076590239ee4b6b"
+    },
+    {
+      "path": "test_workbench_import_routing.py",
+      "size_bytes": 2766,
+      "sha256": "af8efd2a7c8ed8f81a716b9b666da3c1479e67f3c34f3e96124a5e7422637dab"
     },
     {
       "path": "test_workbench_job_store.py",
@@ -967,8 +977,8 @@
     },
     {
       "path": "test_workbench_web_frontend.mjs",
-      "size_bytes": 15465,
-      "sha256": "8f5df8279dfcb874773ce04a5069aed15ff89d008caecc1d43f204e495b36e37"
+      "size_bytes": 26186,
+      "sha256": "93e608b97248ae83fa5e94bb82df27e11b45603f28338fd9d8b01ef23bc47089"
     },
     {
       "path": "test_workbench_web_launch.py",
@@ -977,13 +987,13 @@
     },
     {
       "path": "test_workbench_web_server.py",
-      "size_bytes": 9122,
-      "sha256": "878b98cec6f26b589005f03fc89f7b57276abc823f4f0db8a1933142cccecfb0"
+      "size_bytes": 12545,
+      "sha256": "a61a095673a70b1bc406954aca42244e5955776c934bbd67e647457eab2bdc6c"
     },
     {
       "path": "test_workbench_web_state.py",
-      "size_bytes": 26295,
-      "sha256": "4791a8a5b225adca6c5e224c2c7e9f70264264242f592879aca3c940aa6d429c"
+      "size_bytes": 32353,
+      "sha256": "43acbb70f0b17574f316a7d5b2999bb814c2ad06b96a6e28359f705403c75dd7"
     },
     {
       "path": "verified_index_rpc.py",
@@ -1007,18 +1017,18 @@
     },
     {
       "path": "web/index.html",
-      "size_bytes": 5004,
-      "sha256": "7cc9c1e9f3ae14aa7eea2027317cae881b842f4531a85b696d8e1b246a7ea4e4"
+      "size_bytes": 5320,
+      "sha256": "e6ef7b992c07ad04cfba7c84489b707169f6eed580e0992f1ccb0df2ab01d771"
     },
     {
       "path": "web/workbench.css",
-      "size_bytes": 25298,
-      "sha256": "dd170feba724282cfc823a0435bda6e6244e6ad7730279e7b454dffe9fbe7410"
+      "size_bytes": 29382,
+      "sha256": "c272eed7782242287df06e47545125bc5d02bb4827e959b79f9960088c0777b7"
     },
     {
       "path": "web/workbench.js",
-      "size_bytes": 69561,
-      "sha256": "632a448562be264722384607e42e74b797f59d8b8da1526b8e781c461b5b28bf"
+      "size_bytes": 89304,
+      "sha256": "2d93cee2a7d626b87482732df93439d6a3aa9312070d1ee643d54217ae668c6c"
     },
     {
       "path": "whole_book_adapters.py",
@@ -1041,6 +1051,11 @@
       "sha256": "72302e6d76b88556c5b96b285457bb33ce9c4a795870762517b6f696c8ad2ab2"
     },
     {
+      "path": "workbench_book_import.py",
+      "size_bytes": 39632,
+      "sha256": "4168ada5504f9106b3992b50d4ec2741d318fa9eba0ec3c33d7d57138a9a24b3"
+    },
+    {
       "path": "workbench_desktop.py",
       "size_bytes": 5718,
       "sha256": "d0349ca920765d563e006fb9eeba07e1b8bf033f3a742f4ce8667134a8eba4cb"
@@ -1052,8 +1067,8 @@
     },
     {
       "path": "workbench_real.py",
-      "size_bytes": 23620,
-      "sha256": "135302a5091b8ffed7b34f9ae6682d9f979012dcbd4aba7b5afee7fe88210064"
+      "size_bytes": 24220,
+      "sha256": "0070d6ee448780c3c92872036ab39e332ebe1c32a73e4aa0e18c38f97bfa2e6f"
     },
     {
       "path": "workbench_real_control.py",
@@ -1062,8 +1077,8 @@
     },
     {
       "path": "workbench_real_flow.py",
-      "size_bytes": 2241,
-      "sha256": "6a87ef4ed09325c2efbc3e0e19d643edbb0fc9ffe4bcd48fd9d8ec5796f1b4ad"
+      "size_bytes": 2499,
+      "sha256": "56039e7d25044df2e503a1cf4f304c253d5a94deb0b1289386d5e39e6329b916"
     },
     {
       "path": "workbench_real_index_mac.py",
@@ -1092,8 +1107,8 @@
     },
     {
       "path": "workbench_real_v2_runtime.py",
-      "size_bytes": 11582,
-      "sha256": "7ca95ac1a1dfe9dd034dd58cf42be90f822dcc6d18af2e27d4602497b68dc3f5"
+      "size_bytes": 11316,
+      "sha256": "424bda5f50122e2f79f96dd64e115c2e7cd0535adcb81ebae50c9cf50af3b631"
     },
     {
       "path": "workbench_real_v2_sequence_adapter.py",
@@ -1117,13 +1132,13 @@
     },
     {
       "path": "workbench_web_server.py",
-      "size_bytes": 14364,
-      "sha256": "8fbe34756011866c03d29b446cc1a68228aee559d42a9dbf81b337183415497b"
+      "size_bytes": 19127,
+      "sha256": "213dac85ee0b8179a9d6a099b6b39da01db2322f1322d7e32260869d6b50714b"
     },
     {
       "path": "workbench_web_state.py",
-      "size_bytes": 35701,
-      "sha256": "7cbfa9de4fd6fc5752db9257bb58ab8c688d8ac0ab069be48e368c2208645c6d"
+      "size_bytes": 43591,
+      "sha256": "bb9b9437d2be241a46853de72762e03f60bd4484c8a3b23941886a7e7f065df5"
     }
   ]
 }

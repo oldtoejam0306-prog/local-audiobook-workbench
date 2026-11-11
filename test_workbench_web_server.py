@@ -4,6 +4,7 @@ from http.server import BaseHTTPRequestHandler
 from io import BytesIO
 import json
 import tempfile
+import socket
 import threading
 import unittest
 import wave
@@ -29,6 +30,9 @@ class FakeService:
         self.media = media
         self.media_sha = hashlib.sha256(media.read_bytes()).hexdigest()
         self.actions = []
+        self.root = media.parent
+        self.uploads = []
+        self.upload_busy = False
 
     def snapshot(self):
         return {'ready': True}
@@ -47,6 +51,23 @@ class FakeService:
 
     def resolve_media(self, media_id):
         return self.media, self.media_sha
+
+    def reserve_import_upload(self):
+        if self.upload_busy:
+            return False
+        self.upload_busy = True
+        return True
+
+    def cancel_import_upload(self):
+        self.upload_busy = False
+
+    def accept_import_upload(self, path, name):
+        self.uploads.append((Path(path).read_bytes(), name))
+        Path(path).unlink()
+        self.upload_busy = False
+
+    def snapshot(self):
+        return {'ready': True}
 
 
 class WorkbenchWebServerTests(unittest.TestCase):
@@ -182,6 +203,52 @@ class WorkbenchWebServerTests(unittest.TestCase):
         self.assertEqual(status, 413)
         status, _, _ = self.request('/api/action', method='POST', data=b'{oops', headers=headers)
         self.assertEqual(status, 400)
+
+    def test_book_preview_requires_auth_and_valid_filename_and_streams_bytes(self):
+        payload = b'local book bytes'
+        status, _, _ = self.request('/api/books/preview', method='POST', data=payload,
+                                    headers={'Content-Type':'application/octet-stream',
+                                             'X-Book-Filename':'book.txt'})
+        self.assertEqual(status, 401)
+        for bad_name in ('../book.txt', '%2e%2e%2fbook.txt', 'book.pdf'):
+            status, _, _ = self.request('/api/books/preview', method='POST', data=payload,
+                                        headers={'X-Workbench-Token':'test-token',
+                                                 'Content-Type':'application/octet-stream',
+                                                 'X-Book-Filename':bad_name})
+            self.assertEqual(status, 400)
+        status, _, _ = self.request('/api/books/preview', method='POST', data=payload,
+                                    headers={'X-Workbench-Token':'test-token',
+                                             'Content-Type':'application/octet-stream',
+                                             'X-Book-Filename':'%E4%B9%A6%E5%90%8D.txt'})
+        self.assertEqual(status, 202)
+        self.assertEqual(self.service.uploads, [(payload, '书名.txt')])
+
+    def test_book_preview_busy_and_size_bound(self):
+        self.service.upload_busy = True
+        status, _, _ = self.request('/api/books/preview', method='POST', data=b'x',
+                                    headers={'X-Workbench-Token':'test-token',
+                                             'Content-Type':'application/octet-stream',
+                                             'X-Book-Filename':'book.txt'})
+        self.assertEqual(status, 409)
+
+    def test_book_preview_rejects_transfer_encoding_duplicate_length_and_truncation(self):
+        port = self.server.server_port
+        base = (f'POST /api/books/preview HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n'
+                'X-Workbench-Token: test-token\r\nContent-Type: application/octet-stream\r\n'
+                'X-Book-Filename: a.txt\r\n')
+        for suffix in ('Transfer-Encoding: chunked\r\nContent-Length: 1\r\n\r\nx',
+                       'Content-Length: 1\r\nContent-Length: 1\r\n\r\nx'):
+            connection = socket.create_connection(('127.0.0.1', port), timeout=3)
+            connection.sendall((base + suffix).encode('ascii'))
+            response = connection.recv(512)
+            self.assertIn(b'400', response)
+            connection.close()
+        connection = socket.create_connection(('127.0.0.1', port), timeout=3)
+        connection.sendall((base + 'Content-Length: 10\r\n\r\nx').encode('ascii'))
+        connection.shutdown(socket.SHUT_WR)
+        response = connection.recv(1024)
+        self.assertIn(b'400', response)
+        connection.close()
         status, _, _ = self.request('/api/action', method='POST', data=b'{}',
                                     headers={'X-Workbench-Token':'test-token', 'Content-Type':'text/plain'})
         self.assertEqual(status, 400)
