@@ -1,6 +1,6 @@
 # Source allowlist
 
-本次分发以下源码、测试、占位配置与说明。CLEAN_COPY_MANIFEST.json 另行记录文件大小与摘要。
+本次分发以下源码、测试、占位配置与说明。CLEAN_COPY_MANIFEST.json 记录这些文件的大小与摘要。
 
 - `.gitignore`
 - `LICENSE`
@@ -33,6 +33,7 @@
 - `chapter_map_v2_ledger.py`
 - `chapter_map_worker.mjs`
 - `chapter_model_cache.py`
+- `chapter_revision_runtime.py`
 - `character_fusion.py`
 - `character_profile_jobs.py`
 - `character_profile_protocol.mjs`
@@ -54,6 +55,7 @@
 - `controlled_real_voice.py`
 - `correction_memory.py`
 - `deepseek_single_chapter_experiment.mjs`
+- `delivery_policy.py`
 - `experimental_isolated_voice_library.py`
 - `experimental_mac_text_voice_child.py`
 - `experimental_mac_voice_orchestrator.py`
@@ -82,8 +84,10 @@
 - `native_unit_cache.py`
 - `natural_pacing.py`
 - `persisted_chapter_index.py`
+- `profile_coverage.py`
 - `profile_fusion_adapter.py`
 - `profile_job.py`
+- `profile_json_recovery.mjs`
 - `profile_manifest_rpc.py`
 - `quality_report.py`
 - `quarantine/legacy-worker-contracts/real_pipeline_worker_pin_test.py.txt`
@@ -114,6 +118,7 @@
 - `test_analysis_dispatch_cache.py`
 - `test_attribution_batch_validation.py`
 - `test_attribution_result_validation.py`
+- `test_attribution_staging_adapter.py`
 - `test_audio_playback.py`
 - `test_auto_voice_planner.py`
 - `test_batch_worker.py`
@@ -122,9 +127,11 @@
 - `test_chapter_map_context_v2.py`
 - `test_chapter_map_worker_offline.py`
 - `test_chapter_model_cache.py`
+- `test_chapter_revision_runtime.py`
 - `test_character_profile_jobs.py`
 - `test_character_profile_protocol.mjs`
 - `test_console_voice_billing.py`
+- `test_console_voice_transfer.py`
 - `test_context_compaction.py`
 - `test_continuity_runner.py`
 - `test_continuity_workbench.py`
@@ -133,10 +140,12 @@
 - `test_controlled_real_voice.py`
 - `test_correction_memory.py`
 - `test_deepseek_single_chapter_experiment.mjs`
+- `test_delivery_policy.py`
 - `test_experimental_isolated_voice_library.py`
 - `test_experimental_mac_text_voice_child.py`
 - `test_experimental_mac_voice_orchestrator.py`
 - `test_experimental_mac_voice_process_children.py`
+- `test_index_bridge_header.py`
 - `test_isolated_real_batch_controller.py`
 - `test_isolated_real_multivoice_mac.py`
 - `test_isolated_voice_design.py`
@@ -150,6 +159,9 @@
 - `test_mac_voice_worker.py`
 - `test_native_unit_cache.py`
 - `test_natural_pacing.py`
+- `test_profile_coverage.py`
+- `test_profile_json_recovery.mjs`
+- `test_profile_json_recovery.py`
 - `test_quality_report_privacy.py`
 - `test_real_book_sequence.py`
 - `test_real_pipeline_skip.py`
@@ -164,6 +176,7 @@
 - `test_whole_book_integrated_offline.py`
 - `test_whole_book_plan.py`
 - `test_whole_book_safety_audit.py`
+- `test_workbench_audio_revision.py`
 - `test_workbench_job_store.py`
 - `test_workbench_real.py`
 - `test_workbench_real_control.py`
@@ -180,6 +193,7 @@
 - `whole_book_adapters.py`
 - `whole_book_executor.py`
 - `whole_book_plan.py`
+- `workbench_audio_revision.py`
 - `workbench_job_store.py`
 - `workbench_real.py`
 - `workbench_real_control.py`

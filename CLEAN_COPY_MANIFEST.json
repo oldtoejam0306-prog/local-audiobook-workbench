@@ -12,8 +12,8 @@
     },
     {
       "path": "MATERIALS.md",
-      "size_bytes": 3960,
-      "sha256": "91925fbca54ecbd8997983b1594d62a9d4bb27bbc168c18157946a4dec5ba0e1"
+      "size_bytes": 5106,
+      "sha256": "65d770abe1f63a81c23b169647cec8ea660ca5b34cc6031893cf36d94767cb69"
     },
     {
       "path": "NOTICE",
@@ -22,13 +22,13 @@
     },
     {
       "path": "README.md",
-      "size_bytes": 9270,
-      "sha256": "8971bb2c70f1b27ab3c4b6d94ff9b79474f3873effbb7b623cbf9acea86e5966"
+      "size_bytes": 14368,
+      "sha256": "65f79e448a1846c50de49831f379e378ee776fd0daa6751a5576413aef8c3347"
     },
     {
       "path": "SOURCE_ALLOWLIST.md",
-      "size_bytes": 6336,
-      "sha256": "92e0e9f28d325d568dcd362c312118466ddb750dbd4d9e68bd40fa48d7378722"
+      "size_bytes": 6801,
+      "sha256": "10bf5be0cb43345ac1125bd8f96043b321c10c82701a2080651f0be2ec193639"
     },
     {
       "path": "THIRD_PARTY_NOTICES.md",
