@@ -1,0 +1,673 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-11-11T10:59:07.218Z",
+  "title": "Design System: Local Audiobook Workbench",
+  "extensions": {
+    "colorMeta": {
+      "paper": {
+        "role": "neutral",
+        "displayName": "paper",
+        "canonical": "#f5f3ed",
+        "tonalRamp": [
+          "#0c0b07",
+          "#252420",
+          "#41403b",
+          "#5f5d58",
+          "#7f7d78",
+          "#a09e99",
+          "#c6c4be",
+          "#f0eee8"
+        ]
+      },
+      "surface": {
+        "role": "neutral",
+        "displayName": "surface",
+        "canonical": "#fffefb",
+        "tonalRamp": [
+          "#0c0b09",
+          "#252422",
+          "#40403d",
+          "#5e5d5b",
+          "#7e7d7a",
+          "#9f9e9b",
+          "#c5c4c1",
+          "#efeeeb"
+        ]
+      },
+      "surface-raised": {
+        "role": "neutral",
+        "displayName": "surface-raised",
+        "canonical": "#ffffff",
+        "tonalRamp": [
+          "#0b0b0b",
+          "#242424",
+          "#404040",
+          "#5d5d5d",
+          "#7d7d7d",
+          "#9e9e9e",
+          "#c4c4c4",
+          "#eeeeee"
+        ]
+      },
+      "ink": {
+        "role": "neutral",
+        "displayName": "ink",
+        "canonical": "#26372f",
+        "tonalRamp": [
+          "#020f08",
+          "#182821",
+          "#33443c",
+          "#50635a",
+          "#6f8379",
+          "#90a49a",
+          "#b5cac0",
+          "#dff4ea"
+        ]
+      },
+      "muted": {
+        "role": "neutral",
+        "displayName": "muted",
+        "canonical": "#59685e",
+        "tonalRamp": [
+          "#040e07",
+          "#1a281f",
+          "#36443a",
+          "#536258",
+          "#728277",
+          "#93a398",
+          "#b8c9be",
+          "#e2f4e8"
+        ]
+      },
+      "line": {
+        "role": "neutral",
+        "displayName": "line",
+        "canonical": "#d8ddd3",
+        "tonalRamp": [
+          "#090c06",
+          "#22251e",
+          "#3d4139",
+          "#5b5f57",
+          "#7b7f76",
+          "#9ca097",
+          "#c1c6bc",
+          "#ebf1e6"
+        ]
+      },
+      "green": {
+        "role": "primary",
+        "displayName": "green",
+        "canonical": "#315946",
+        "tonalRamp": [
+          "#000f07",
+          "#012c1c",
+          "#214937",
+          "#3f6854",
+          "#5f8873",
+          "#7faa94",
+          "#a4d0b9",
+          "#cefbe3"
+        ]
+      },
+      "green-hover": {
+        "role": "primary",
+        "displayName": "green-hover",
+        "canonical": "#284a39",
+        "tonalRamp": [
+          "#000f07",
+          "#082b1c",
+          "#264837",
+          "#446754",
+          "#638774",
+          "#84a894",
+          "#a9cfba",
+          "#d2fae4"
+        ]
+      },
+      "green-text": {
+        "role": "primary",
+        "displayName": "green-text",
+        "canonical": "#315946",
+        "tonalRamp": [
+          "#000f07",
+          "#012c1c",
+          "#214937",
+          "#3f6854",
+          "#5f8873",
+          "#7faa94",
+          "#a4d0b9",
+          "#cefbe3"
+        ]
+      },
+      "green-soft": {
+        "role": "primary",
+        "displayName": "green-soft",
+        "canonical": "#e1e9dd",
+        "tonalRamp": [
+          "#080d06",
+          "#20261d",
+          "#3c4238",
+          "#596056",
+          "#798075",
+          "#9aa196",
+          "#bfc7bb",
+          "#e9f1e5"
+        ]
+      },
+      "green-pale": {
+        "role": "primary",
+        "displayName": "green-pale",
+        "canonical": "#eef2eb",
+        "tonalRamp": [
+          "#0a0c08",
+          "#222520",
+          "#3e413b",
+          "#5b5f59",
+          "#7b7f78",
+          "#9ca099",
+          "#c2c5bf",
+          "#ecf0e9"
+        ]
+      },
+      "gold": {
+        "role": "secondary",
+        "displayName": "gold",
+        "canonical": "#e4c87f",
+        "tonalRamp": [
+          "#100a00",
+          "#2e2200",
+          "#503d00",
+          "#745a02",
+          "#947a30",
+          "#b79b53",
+          "#ddc179",
+          "#ffedc0"
+        ]
+      },
+      "gold-deep": {
+        "role": "secondary",
+        "displayName": "gold-deep",
+        "canonical": "#68511f",
+        "tonalRamp": [
+          "#110a00",
+          "#302100",
+          "#523c04",
+          "#715a28",
+          "#927a48",
+          "#b49b69",
+          "#dbc18d",
+          "#ffecc8"
+        ]
+      },
+      "gold-soft": {
+        "role": "secondary",
+        "displayName": "gold-soft",
+        "canonical": "#f3ead0",
+        "tonalRamp": [
+          "#100a00",
+          "#2a230f",
+          "#473f2a",
+          "#655d47",
+          "#857d65",
+          "#a79e86",
+          "#cdc4ab",
+          "#f7eed4"
+        ]
+      },
+      "rust": {
+        "role": "tertiary",
+        "displayName": "rust",
+        "canonical": "#9a4327",
+        "tonalRamp": [
+          "#1b0300",
+          "#440f00",
+          "#712000",
+          "#963f23",
+          "#ba6044",
+          "#df8164",
+          "#ffad93",
+          "#ffe9e2"
+        ]
+      },
+      "rust-soft": {
+        "role": "tertiary",
+        "displayName": "rust-soft",
+        "canonical": "#f4e0d1",
+        "tonalRamp": [
+          "#140801",
+          "#2f2115",
+          "#4c3c30",
+          "#6b5a4d",
+          "#8b796c",
+          "#ad9a8c",
+          "#d3c0b1",
+          "#feeadb"
+        ]
+      },
+      "danger": {
+        "role": "tertiary",
+        "displayName": "danger",
+        "canonical": "#8c2d22",
+        "tonalRamp": [
+          "#1f0000",
+          "#4b0100",
+          "#76160e",
+          "#9a3a2e",
+          "#bf5b4d",
+          "#e47d6d",
+          "#ffab9d",
+          "#ffe9e5"
+        ]
+      },
+      "focus": {
+        "role": "tertiary",
+        "displayName": "focus",
+        "canonical": "#a64829",
+        "tonalRamp": [
+          "#1b0300",
+          "#441000",
+          "#712000",
+          "#993c1d",
+          "#be5d3e",
+          "#e37f5f",
+          "#ffad92",
+          "#ffe9e2"
+        ]
+      },
+      "dark-paper": {
+        "role": "neutral",
+        "displayName": "dark-paper",
+        "canonical": "#202320",
+        "tonalRamp": [
+          "#090c09",
+          "#222522",
+          "#3d413d",
+          "#5b5f5b",
+          "#7b7e7b",
+          "#9ca09c",
+          "#c1c5c1",
+          "#ecf0ec"
+        ]
+      },
+      "dark-surface": {
+        "role": "neutral",
+        "displayName": "dark-surface",
+        "canonical": "#292c28",
+        "tonalRamp": [
+          "#090c09",
+          "#222521",
+          "#3e413d",
+          "#5b5f5a",
+          "#7b7e7a",
+          "#9ca09b",
+          "#c1c5c0",
+          "#ecf0ea"
+        ]
+      },
+      "dark-surface-raised": {
+        "role": "neutral",
+        "displayName": "dark-surface-raised",
+        "canonical": "#30332e",
+        "tonalRamp": [
+          "#0a0c08",
+          "#222520",
+          "#3e413c",
+          "#5b5f59",
+          "#7b7f79",
+          "#9ca09a",
+          "#c2c5bf",
+          "#ecf0e9"
+        ]
+      },
+      "dark-ink": {
+        "role": "neutral",
+        "displayName": "dark-ink",
+        "canonical": "#f0eee7",
+        "tonalRamp": [
+          "#0c0b07",
+          "#25241f",
+          "#41403a",
+          "#5f5e58",
+          "#7f7d77",
+          "#a09e98",
+          "#c6c4bd",
+          "#f0eee7"
+        ]
+      },
+      "dark-muted": {
+        "role": "neutral",
+        "displayName": "dark-muted",
+        "canonical": "#c0c1b9",
+        "tonalRamp": [
+          "#0b0c07",
+          "#24251f",
+          "#40403a",
+          "#5d5e57",
+          "#7d7e77",
+          "#9e9f97",
+          "#c4c5bd",
+          "#eeefe7"
+        ]
+      },
+      "dark-line": {
+        "role": "neutral",
+        "displayName": "dark-line",
+        "canonical": "#4b4e47",
+        "tonalRamp": [
+          "#0a0c07",
+          "#22251f",
+          "#3e413a",
+          "#5c5f58",
+          "#7b7f77",
+          "#9ca098",
+          "#c2c6bd",
+          "#ecf0e7"
+        ]
+      },
+      "dark-green": {
+        "role": "primary",
+        "displayName": "dark-green",
+        "canonical": "#3e6849",
+        "tonalRamp": [
+          "#001004",
+          "#002d12",
+          "#204a2d",
+          "#3f694a",
+          "#5e8969",
+          "#7fab89",
+          "#a4d1ae",
+          "#cdfcd8"
+        ]
+      },
+      "dark-green-hover": {
+        "role": "primary",
+        "displayName": "dark-green-hover",
+        "canonical": "#4d7958",
+        "tonalRamp": [
+          "#001004",
+          "#002d11",
+          "#1f4a2c",
+          "#3e6949",
+          "#5d8a68",
+          "#7eab88",
+          "#a3d2ad",
+          "#ccfdd7"
+        ]
+      },
+      "dark-green-text": {
+        "role": "primary",
+        "displayName": "dark-green-text",
+        "canonical": "#b4d0b5",
+        "tonalRamp": [
+          "#001002",
+          "#132a15",
+          "#2f4730",
+          "#4c654e",
+          "#6b856c",
+          "#8ca78d",
+          "#b1cdb2",
+          "#dbf8dc"
+        ]
+      },
+      "dark-green-soft": {
+        "role": "primary",
+        "displayName": "dark-green-soft",
+        "canonical": "#344538",
+        "tonalRamp": [
+          "#020f05",
+          "#18281d",
+          "#344538",
+          "#516355",
+          "#708374",
+          "#91a495",
+          "#b6caba",
+          "#e0f5e4"
+        ]
+      },
+      "dark-green-pale": {
+        "role": "primary",
+        "displayName": "dark-green-pale",
+        "canonical": "#2e382f",
+        "tonalRamp": [
+          "#060e07",
+          "#1d271e",
+          "#39433a",
+          "#566157",
+          "#758176",
+          "#96a297",
+          "#bcc8bd",
+          "#e6f3e7"
+        ]
+      },
+      "dark-gold": {
+        "role": "secondary",
+        "displayName": "dark-gold",
+        "canonical": "#dfc278",
+        "tonalRamp": [
+          "#100a00",
+          "#2e2200",
+          "#503d00",
+          "#745a00",
+          "#957a2e",
+          "#b79b52",
+          "#dec177",
+          "#ffedc1"
+        ]
+      },
+      "dark-gold-deep": {
+        "role": "secondary",
+        "displayName": "dark-gold-deep",
+        "canonical": "#f1d893",
+        "tonalRamp": [
+          "#100a00",
+          "#2e2200",
+          "#4f3d00",
+          "#715b10",
+          "#927b37",
+          "#b49c59",
+          "#dbc27e",
+          "#ffeebe"
+        ]
+      },
+      "dark-gold-soft": {
+        "role": "secondary",
+        "displayName": "dark-gold-soft",
+        "canonical": "#4a432f",
+        "tonalRamp": [
+          "#100a00",
+          "#2a2310",
+          "#463f2b",
+          "#655d48",
+          "#857d67",
+          "#a69e87",
+          "#ccc4ac",
+          "#f7eed6"
+        ]
+      },
+      "dark-rust": {
+        "role": "tertiary",
+        "displayName": "dark-rust",
+        "canonical": "#bd6849",
+        "tonalRamp": [
+          "#1a0400",
+          "#421200",
+          "#6f2300",
+          "#934223",
+          "#b76344",
+          "#dc8464",
+          "#ffad90",
+          "#ffe9e1"
+        ]
+      },
+      "dark-rust-soft": {
+        "role": "tertiary",
+        "displayName": "dark-rust-soft",
+        "canonical": "#4b352d",
+        "tonalRamp": [
+          "#170602",
+          "#321e17",
+          "#503a32",
+          "#6f574f",
+          "#90776e",
+          "#b2988e",
+          "#d9bdb3",
+          "#ffe9e1"
+        ]
+      },
+      "dark-danger": {
+        "role": "tertiary",
+        "displayName": "dark-danger",
+        "canonical": "#f0a092",
+        "tonalRamp": [
+          "#1e0000",
+          "#490602",
+          "#6a271e",
+          "#8d463b",
+          "#b06659",
+          "#d58779",
+          "#fdac9e",
+          "#ffe9e5"
+        ]
+      },
+      "dark-focus": {
+        "role": "tertiary",
+        "displayName": "dark-focus",
+        "canonical": "#e6a07d",
+        "tonalRamp": [
+          "#180500",
+          "#3e1600",
+          "#672c06",
+          "#894b29",
+          "#ac6b49",
+          "#d08c69",
+          "#f8b18e",
+          "#ffe9df"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "label": {
+        "displayName": "Label",
+        "purpose": "Field labels, status, metadata, and playback time; 12px."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Standard copy, controls, and navigation; 14px."
+      },
+      "title": {
+        "displayName": "Title",
+        "purpose": "Section headings; 16px, semibold."
+      },
+      "headline": {
+        "displayName": "Headline",
+        "purpose": "Page headings; 20px, semibold."
+      }
+    },
+    "shadows": [
+      {
+        "name": "menu-shadow",
+        "value": "0 12px 28px rgba(38, 55, 47, .16)",
+        "purpose": "Open select picker in the light theme; dark mode uses a darker equivalent."
+      },
+      {
+        "name": "floating-panel-shadow",
+        "value": "0 10px 24px rgba(38, 55, 47, .16)",
+        "purpose": "Open floating cost panel."
+      }
+    ],
+    "motion": [
+      {
+        "name": "control-transition",
+        "value": "background-color .16s ease-out, border-color .16s ease-out, color .16s ease-out",
+        "purpose": "Subtle feedback for button state changes."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "compact-navigation",
+        "value": "780px"
+      },
+      {
+        "name": "narrow-topbar",
+        "value": "520px"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Primary production or playback action.",
+      "html": "<button class=\"ds-button-primary\" type=\"button\">Start</button>",
+      "css": ".ds-button-primary { min-height: 36px; padding: 6px 13px; border: 1px solid var(--green); border-radius: 12px; background: var(--green); color: #fffefb; font: 600 14px/20px \"Source Sans 3\", \"Microsoft YaHei UI\", \"Microsoft YaHei\", sans-serif; transition: background-color .16s ease-out, border-color .16s ease-out; } .ds-button-primary:hover:not(:disabled) { border-color: var(--green-hover); background: var(--green-hover); } .ds-button-primary:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }"
+    },
+    {
+      "name": "Warm Action",
+      "kind": "button",
+      "refersTo": "button-warm",
+      "description": "Secondary confirmation or adoption action.",
+      "html": "<button class=\"ds-button-warm\" type=\"button\">Adopt</button>",
+      "css": ".ds-button-warm { min-height: 36px; padding: 6px 13px; border: 1px solid var(--gold); border-radius: 12px; background: var(--gold); color: #3d3422; font: 600 14px/20px \"Source Sans 3\", \"Microsoft YaHei UI\", \"Microsoft YaHei\", sans-serif; } .ds-button-warm:hover:not(:disabled) { border-color: #d9bb68; background: #edd58d; } .ds-button-warm:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }"
+    },
+    {
+      "name": "Text Field",
+      "kind": "input",
+      "refersTo": "field",
+      "description": "Compact text or instruction entry.",
+      "html": "<label class=\"ds-field\"><span>Instruction</span><textarea rows=\"3\"></textarea></label>",
+      "css": ".ds-field { display: grid; gap: 5px; color: var(--muted); font: 400 12px/18px \"Source Sans 3\", \"Microsoft YaHei UI\", \"Microsoft YaHei\", sans-serif; } .ds-field textarea { min-height: 84px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-raised); color: var(--ink); font: 400 14px/1.55 \"Source Sans 3\", \"Microsoft YaHei UI\", \"Microsoft YaHei\", sans-serif; } .ds-field textarea:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }"
+    },
+    {
+      "name": "Themed Select",
+      "kind": "input",
+      "refersTo": "select",
+      "description": "Book, speaker, and playback speed selection with themed open and selected states.",
+      "html": "<select class=\"ds-select\" aria-label=\"Choose an item\"><option selected>Current item</option><option>Another item</option></select>",
+      "css": ".ds-select, .ds-select::picker(select) { appearance: base-select; } .ds-select { min-height: 40px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-raised); color: var(--ink); font: 400 14px/1.55 \"Source Sans 3\", \"Microsoft YaHei UI\", \"Microsoft YaHei\", sans-serif; } .ds-select:hover, .ds-select:open { border-color: var(--green); background: var(--green-soft); } .ds-select::picker(select) { overflow: auto; padding: 4px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-raised); color: var(--ink); box-shadow: var(--shadow-menu); } .ds-select option { min-height: 40px; padding: 8px 10px; border-radius: 12px; color: var(--ink); background: var(--surface-raised); } .ds-select option:checked, .ds-select option:hover, .ds-select option:focus { background: var(--green-soft); color: var(--ink); } .ds-select option::checkmark { color: var(--green); } .ds-select:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }"
+    },
+    {
+      "name": "Primary Navigation",
+      "kind": "nav",
+      "refersTo": "navigation-active",
+      "description": "Three top-level work destinations with a clear current-page underline.",
+      "html": "<nav class=\"ds-nav\" aria-label=\"Primary\"><a href=\"#\" class=\"ds-nav-item\">Chapters</a><a href=\"#\" class=\"ds-nav-item is-active\" aria-current=\"page\">Review</a><a href=\"#\" class=\"ds-nav-item\">Voices</a></nav>",
+      "css": ".ds-nav { display: flex; min-height: 46px; align-items: stretch; gap: 22px; } .ds-nav-item { display: inline-flex; min-height: 46px; align-items: center; justify-content: center; padding: 8px 2px; border-bottom: 2px solid transparent; color: var(--muted); font: 600 14px/1.55 \"Source Sans 3\", \"Microsoft YaHei UI\", \"Microsoft YaHei\", sans-serif; text-decoration: none; } .ds-nav-item:hover { color: var(--ink); } .ds-nav-item.is-active { border-bottom-color: var(--green); color: var(--green-text); } .ds-nav-item:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }"
+    },
+    {
+      "name": "Surface",
+      "kind": "card",
+      "refersTo": "surface",
+      "description": "Flat bordered work area for lists, transcripts, and forms.",
+      "html": "<section class=\"ds-surface\"><h2>Work area</h2><p>Content</p></section>",
+      "css": ".ds-surface { min-width: 0; padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); color: var(--ink); } .ds-surface h2 { margin: 0 0 12px; font: 600 16px/1.5 \"Source Sans 3\", \"Microsoft YaHei UI\", \"Microsoft YaHei\", sans-serif; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "Local Audiobook Workbench",
+    "overview": "The interface supports chapter production, listening review, and character voice management. The topbar provides access to these three work areas and keeps book, theme, cost, and exit controls nearby. The chapter, transcript, and voice surfaces prioritize readable content and direct actions.\n\nThe light theme uses warm paper and near-white surfaces. The dark theme uses charcoal surfaces with the same green, gold, rust, and status roles. The 12px corner radius, compact type scale, and fixed playback dock support repeated work with chapters, transcripts, and forms.",
+    "keyCharacteristics": [
+      "Chapter production, listening review, and character voice management each have a topbar destination.",
+      "Green identifies actions and active selections. Gold identifies secondary actions and pending review. Rust identifies caution and correction.",
+      "Light and dark themes use the same semantic color roles.",
+      "The interface uses compact lists, transcript text, forms, and persistent playback controls."
+    ],
+    "rules": [],
+    "dos": [
+      "Do keep chapters, listening review, and character voices together in the topbar navigation.",
+      "Do use warm paper in light mode and warm charcoal in dark mode with the same green, gold, and rust roles.",
+      "Do style speaker and playback speed selects with 14px text, 40px height, and a 12px radius.",
+      "Do theme the closed select, open picker, option hover, and selected option.",
+      "Do preserve Enter, Escape, and arrow-key operation for native selects.",
+      "Do use 24px and 32px for primary work-area separation and 8px to 16px inside compact control groups.",
+      "Do show candidate states through color and text labels."
+    ],
+    "donts": [
+      "Don't introduce blue or purple into the interface palette.",
+      "Don't assign different semantic colors to the same action or state in light and dark modes.",
+      "Don't use color alone to identify selected, pending, error, or playback states.",
+      "Don't leave the select picker or its options in an unrelated browser theme.",
+      "Don't use large card shadows as the default depth treatment."
+    ]
+  }
+}

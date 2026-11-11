@@ -32,7 +32,7 @@ class RevisionStoreTests(unittest.TestCase):
         self.normalized = {"chapters": [{"id": self.chapter, "segments": [
             {"speaker_id": "narrator", "text": "旁白第一段。"},
             {"speaker_id": "narrator", "text": "旁白第一段。"},
-            {"speaker_id": "speaker-1", "text": "角色回应。"}]}],
+            {"speaker_id": "speaker-1", "text": "角色回应。", "instruct": "原有朗读提示"}]}],
             "audit": {"source_text_sha256": self.source_sha}, "original_stage_sha256": "b" * 64}
         self.stage_path.write_bytes(canonical(self.normalized))
         self.voice_dir = self.root / "voices" / "narrator"
@@ -95,14 +95,14 @@ class RevisionStoreTests(unittest.TestCase):
         normalized_sha = sha(canonical({"chapters": derived["chapters"], "audit": derived["audit"],
                                         "original_stage_sha256": sha(derived_raw)}))
         self.assertEqual("".join(x["text"] for x in derived["chapters"][0]["segments"]), self.source_text)
-        self.assertEqual([x["speaker_id"] for x in derived["chapters"][0]["segments"]],
-                         [x["speaker_id"] for x in self.normalized["chapters"][0]["segments"]])
+        output_roles = {x["speaker_id"] for x in derived["chapters"][0]["segments"]}
+        self.assertTrue(output_roles <= {x["speaker_id"] for x in self.normalized["chapters"][0]["segments"]})
         wav = Path(output_dir) / "chapter.wav"
         with wave.open(str(wav), "wb") as audio:
             audio.setnchannels(1); audio.setsampwidth(2); audio.setframerate(24000); audio.writeframes(b"\x00\x00" * 16)
         native_path = Path(output_dir) / "native-render-receipt.json"
-        voice_hashes = {role: binding["request"]["vector_sha256"]
-                        for role, binding in context["voice_bindings"].items()}
+        voice_hashes = {role: context["voice_bindings"][role]["request"]["vector_sha256"]
+                        for role in output_roles}
         native = {"kind": "native_huashuo_chapter_v1", "human_reviewed": False,
             "source_sha256": self.source_sha, "source_document_sha256": normalized_sha,
             "text_sha256": self.source_sha, "voice_hashes": voice_hashes,
@@ -240,6 +240,77 @@ class RevisionStoreTests(unittest.TestCase):
                 revision.generate(self.context, rows[0]["id"], "\n" + "x" * 800, self.fake_render)
             with self.assertRaisesRegex(ValueError, "stale or unknown"):
                 revision.generate(self.context, "0" * 64, "自然收束", self.fake_render)
+
+    def test_specific_speaker_override_uses_only_verified_output_voice_and_preserves_hint(self):
+        rows = revision.list_paragraphs(self.context)
+        with patch("real_book_auto_voice._selection_lock"):
+            created = revision.generate(self.context, rows[2]["id"], "", self.fake_render,
+                                        speaker_id="narrator", revision_id="speaker-override")
+            verified = revision.verify_candidate(self.context, created["revision_id"])
+            selected = revision.adopt(self.context, created["revision_id"])
+            resolved = revision.resolve_adopted(self.context)
+        stage_path = Path(self.context["revision_root"]) / created["revision_id"] / "normalized-stage.json"
+        stage = json.loads(stage_path.read_bytes())
+        segment = stage["chapters"][0]["segments"][2]
+        self.assertEqual("narrator", segment["speaker_id"])
+        self.assertEqual("原有朗读提示", segment["instruct"])
+        self.assertEqual("speaker-1", created["speaker_id"])
+        self.assertEqual("narrator", created["speaker_override_id"])
+        self.assertIsNone(created["instruction"])
+        self.assertEqual({"narrator"}, set(created["revision_voice_hashes"]))
+        self.assertEqual(selected["record_sha256"], resolved["record_sha256"])
+        native = json.loads(Path(verified["receipt"]["manifest_path"]).with_name("native-render-receipt.json").read_bytes())
+        self.assertEqual(created["revision_voice_hashes"], native["voice_hashes"])
+
+    def test_unknown_speaker_and_same_role_empty_override_are_rejected(self):
+        rows = revision.list_paragraphs(self.context)
+        with patch("real_book_auto_voice._selection_lock"):
+            with self.assertRaisesRegex(ValueError, "not present in the verified source bindings"):
+                revision.generate(self.context, rows[0]["id"], "", self.fake_render,
+                                  speaker_id="unbound-role")
+            with self.assertRaisesRegex(ValueError, "no paragraph change"):
+                revision.generate(self.context, rows[0]["id"], "", self.fake_render,
+                                  speaker_id="narrator")
+
+    def test_revision_stage_and_native_voice_receipt_tampering_are_rejected(self):
+        rows = revision.list_paragraphs(self.context)
+        with patch("real_book_auto_voice._selection_lock"):
+            created = revision.generate(self.context, rows[2]["id"], "", self.fake_render,
+                                        speaker_id="narrator", revision_id="tamper-stage")
+        revision_dir = Path(self.context["revision_root"]) / created["revision_id"]
+        stage_path = revision_dir / "normalized-stage.json"
+        stage = json.loads(stage_path.read_bytes()); stage["chapters"][0]["segments"][2]["text"] = "篡改正文"
+        stage_path.write_bytes(canonical(stage))
+        with patch("real_book_auto_voice._selection_lock"):
+            with self.assertRaisesRegex(ValueError, "revision stage changed"):
+                revision.verify_candidate(self.context, created["revision_id"])
+
+        with patch("real_book_auto_voice._selection_lock"):
+            created = revision.generate(self.context, rows[2]["id"], "", self.fake_render,
+                                        speaker_id="narrator", revision_id="tamper-native")
+        native_path = Path(created["receipt"]["manifest_path"]).with_name("native-render-receipt.json")
+        native = json.loads(native_path.read_bytes()); native["voice_hashes"]["narrator"] = "0" * 64
+        native_path.write_bytes(canonical(native))
+        with patch("real_book_auto_voice._selection_lock"):
+            with self.assertRaisesRegex(ValueError, "native receipt changed"):
+                revision.verify_candidate(self.context, created["revision_id"])
+
+    def test_legacy_revision_record_without_override_fields_remains_verifiable(self):
+        rows = revision.list_paragraphs(self.context)
+        with patch("real_book_auto_voice._selection_lock"):
+            created = revision.generate(self.context, rows[0]["id"], "自然收束", self.fake_render,
+                                        revision_id="legacy-record")
+        revision_path = Path(self.context["revision_root"]) / created["revision_id"] / "revision.json"
+        record = json.loads(revision_path.read_bytes())
+        for key in ("revision_voice_hashes", "revision_voice_fingerprint", "speaker_override_id"):
+            record.pop(key, None)
+        record["version"] = 1
+        record.pop("record_sha256")
+        record["record_sha256"] = sha(canonical(record))
+        revision_path.write_bytes(canonical(record))
+        with patch("real_book_auto_voice._selection_lock"):
+            loaded = revision.verify_candidate(self.context, created["revision_id"])
+        self.assertEqual(record["record_sha256"], loaded["record_sha256"])
 
 
 class RevisionUiPlaybackTests(unittest.TestCase):

@@ -3,6 +3,7 @@ import json
 import tempfile
 import types
 import unittest
+import tkinter as tk
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -20,6 +21,22 @@ class ValueBox:
     def __init__(self, value=''): self.value = value
     def set(self, value): self.value = value
     def get(self): return self.value
+
+
+_ISOLATED_TK_ROOT = None
+
+
+def isolated_tk_root():
+    global _ISOLATED_TK_ROOT
+    if _ISOLATED_TK_ROOT is None:
+        _ISOLATED_TK_ROOT = tk.Tk()
+    return _ISOLATED_TK_ROOT
+
+
+def clear_isolated_tk_root(root):
+    for child in root.winfo_children():
+        child.destroy()
+    root.withdraw()
 
 
 class ProfilePanelHelpersTests(unittest.TestCase):
@@ -52,6 +69,35 @@ class ProfilePanelHelpersTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     panel.read_profile_document(temp, 'book-abc')
         planner.assert_not_called()
+
+    def test_profile_body_scrollbar_uses_same_container_and_resizes(self):
+        try:
+            root=isolated_tk_root()
+        except tk.TclError as exc:
+            self.skipTest(f'隔离 Tk 不可用：{exc}')
+        try:
+            root.geometry('640x420')
+            root.deiconify()
+            root.update_idletasks()
+            view=panel.ProfileView(root);view.pack(fill='both',expand=True)
+            long_text='\n'.join(f'证据行 {index}：用于验证人物档案可滚动。' for index in range(160))
+            view._write(long_text)
+            root.update_idletasks()
+            self.assertEqual(view.body.winfo_parent(),str(view.body_frame))
+            scrollbar=next(child for child in view.body_frame.winfo_children()
+                           if isinstance(child,tkinter_scrollbar_type()))
+            self.assertEqual(scrollbar.get()[0],0.0)
+            view.body.yview_moveto(1.0);root.update_idletasks()
+            self.assertGreater(scrollbar.get()[0],0.0)
+            before=view.body.winfo_height()
+            root.geometry('640x620');root.update()
+            self.assertGreater(view.body.winfo_height(),before)
+        finally:
+            clear_isolated_tk_root(root)
+
+
+def tkinter_scrollbar_type():
+    return panel.ttk.Scrollbar
 
     def test_voice_description_is_labeled_as_creative_choice(self):
         with patch.object(panel.auto, 'creative_description', side_effect=lambda value: value) as guard:
@@ -131,6 +177,9 @@ class VoicePanelButtonFlowTests(unittest.TestCase):
         view.target=ValueBox('林舟')
         view.targets={'林舟':(entity,{'name':'林舟'},plan)}
         view._current_target=lambda:view.targets[view.target.get()]
+        view._target_states={}
+        view._active_target_key=(view.book_id,entity)
+        view._target_signature=lambda book,role:{'profile':'p'*64,'binding':'b'*64}
         view.description=types.SimpleNamespace(get=lambda *args:'清晰自然的中文声音')
         view.generator=generator or Mock(return_value={'directory':str(Path(temp)/'candidate'),
             'request':{'vector_sha256':'b'*64,'wav_sha256':'c'*64}})
@@ -156,13 +205,139 @@ class VoicePanelButtonFlowTests(unittest.TestCase):
         view._log=lambda line:view.errors.append(line)
         view._candidate_ready=lambda result:panel.VoiceView._candidate_ready(view,result)
         view._candidate_failed=lambda error:panel.VoiceView._candidate_failed(view,error)
-        view._playback_ready=lambda generation,prepared,candidate:panel.VoiceView._playback_ready(view,generation,prepared,candidate)
-        view._playback_started=lambda generation,prepared,candidate,error:panel.VoiceView._playback_started(view,generation,prepared,candidate,error)
-        view._playback_failed=lambda generation,error:panel.VoiceView._playback_failed(view,generation,error)
+        view._playback_ready=lambda generation,prepared,candidate,identity=None:panel.VoiceView._playback_ready(view,generation,prepared,candidate,identity)
+        view._playback_started=lambda generation,prepared,candidate,error,identity=None:panel.VoiceView._playback_started(view,generation,prepared,candidate,error,identity)
+        view._playback_failed=lambda generation,error,identity=None:panel.VoiceView._playback_failed(view,generation,error,identity)
         view._release_app_busy=lambda:panel.VoiceView._release_app_busy(view)
+        view._save_active_target_state=lambda:panel.VoiceView._save_active_target_state(view)
+        view._store_target_state=lambda *args,**kwargs:panel.VoiceView._store_target_state(view,*args,**kwargs)
         view._start_binding_playback=lambda binding,**kwargs:panel.VoiceView._start_binding_playback(view,binding,**kwargs)
         view._prepare_binding=lambda binding,speed:panel.VoiceView._prepare_binding(view,binding,speed)
         return view
+
+    def test_book_and_target_reload_preserve_drafts_audition_and_identity(self):
+        try:
+            root=isolated_tk_root()
+        except tk.TclError as exc:
+            self.skipTest(f'隔离 Tk 不可用：{exc}')
+        try:
+            root.withdraw()
+            with tempfile.TemporaryDirectory() as temp, patch.object(panel.auto,'get_selected_voice',return_value=None):
+                view=panel.VoiceView(root,lambda:temp)
+                view.pack(fill='both',expand=True)
+                book='book-'+'a'*20
+                profile={'name':'林舟','voice_design':{'description':'默认描述','rationale':'依据'}}
+                document={'book_id':book,'narration_design':{'description':'旁白描述'},'characters':[profile]}
+                plans={'plans':[{'character':'林舟','spec_id':'a'*16}]}
+                view.load_book(book,document,plans)
+                view.target.set('林舟');view._show_target()
+                view.description.delete('1.0','end');view.description.insert('1.0','保留的编辑草稿')
+                candidate={'entity':view.targets['林舟'][0],
+                           'binding':{'record':{'request':{'vector_sha256':'b'*64}}},
+                           'description':'生成时的描述','spec_id':'c'*16}
+                view.candidate=candidate;view.candidate_played=True;view.playing=True
+                view._show_target()
+                self.assertEqual(view.description.get('1.0','end-1c'),'保留的编辑草稿')
+                self.assertIs(view.candidate,candidate);self.assertTrue(view.candidate_played)
+                view.target.set('旁白');view._show_target()
+                view.target.set('林舟');view._show_target()
+                self.assertIs(view.candidate,candidate);self.assertTrue(view.candidate_played)
+                view.load_book(book,document,plans)
+                self.assertIs(view.candidate,candidate);self.assertTrue(view.candidate_played)
+                self.assertEqual(view.description.get('1.0','end-1c'),'保留的编辑草稿')
+                other_book='book-'+'d'*20
+                other_document={'book_id':other_book,'narration_design':{'description':'旁白'},
+                                'characters':[profile]}
+                view.load_book(other_book,other_document,plans)
+                self.assertNotEqual(view.targets['林舟'][0],candidate['entity'])
+                self.assertIsNone(view.candidate)
+                self.assertFalse(view.candidate_played)
+                self.assertEqual(view.description.get('1.0','end-1c'),'默认描述\n创作依据：依据')
+                changed_profile={'name':'林舟','voice_design':{'description':'更新后的描述','rationale':'新依据'}}
+                changed_document={'book_id':book,'narration_design':{'description':'旁白描述'},
+                                  'characters':[changed_profile]}
+                view.load_book(book,changed_document,plans)
+                view.target.set('林舟');view._show_target()
+                self.assertIsNone(view.candidate)
+                self.assertFalse(view.candidate_played)
+                self.assertEqual(view.description.get('1.0','end-1c'),'更新后的描述\n创作依据：新依据')
+                view.target.set('旁白');view._show_target()
+                narrator_candidate={'entity':'narrator','binding':{'record':{'request':{'vector_sha256':'d'*64}}}}
+                view.candidate=narrator_candidate;view.candidate_played=True
+                updated_narration={'book_id':book,'narration_design':{'description':'新旁白方案'},
+                                   'characters':[changed_profile]}
+                view.load_book(book,updated_narration,plans)
+                self.assertIsNone(view.candidate)
+                self.assertFalse(view.candidate_played)
+                self.assertEqual(view.description.get('1.0','end-1c'),'新旁白方案')
+        finally:
+            clear_isolated_tk_root(root)
+
+    def test_candidate_result_from_old_target_is_saved_without_leaking(self):
+        with tempfile.TemporaryDirectory() as temp:
+            view=self._view(temp)
+            old_book=view.book_id;entity=view.targets['林舟'][0]
+            signature=view._target_signature(old_book,entity)
+            view._target_states[(old_book,entity)]={'signature':signature}
+            view._active_target_key=('other-book',entity)
+            result=(old_book,entity,{},view.targets['林舟'][2],'低沉清晰',
+                    {'record':{'request':{'vector_sha256':'b'*64}}},signature)
+            panel.VoiceView._candidate_ready(view,result)
+            self.assertIsNone(view.candidate)
+            self.assertIn((old_book,entity),view._target_states)
+            self.assertEqual(view._target_states[(old_book,entity)]['candidate']['entity'],entity)
+            self.assertIn('未自动采用',view.errors[-1])
+
+    def test_binding_change_invalidates_candidate_but_keeps_edit_draft(self):
+        try:
+            root=isolated_tk_root()
+        except tk.TclError as exc:
+            self.skipTest(f'隔离 Tk 不可用：{exc}')
+        try:
+            root.withdraw()
+            with tempfile.TemporaryDirectory() as temp:
+                binding_a={'record':{'request':{'vector_sha256':'a'*64}}}
+                binding_b={'record':{'request':{'vector_sha256':'b'*64}}}
+                with patch.object(panel.auto,'get_selected_voice',side_effect=[binding_a,binding_a,binding_a,binding_b]):
+                    view=panel.VoiceView(root,lambda:temp);view.pack(fill='both',expand=True)
+                    book='book-'+'e'*20
+                    profile={'name':'林舟','voice_design':{'description':'默认','rationale':'依据'}}
+                    document={'book_id':book,'characters':[profile]}
+                    plans={'plans':[{'character':'林舟','spec_id':'d'*16}]}
+                    view.load_book(book,document,plans)
+                    view.target.set('林舟');view._show_target()
+                    view.description.delete('1.0','end');view.description.insert('1.0','我的编辑')
+                    view.candidate={'entity':view.targets['林舟'][0],'binding':binding_a}
+                    view.candidate_played=True
+                    view.load_book(book,document,plans)
+                    view.target.set('林舟');view._show_target()
+                    self.assertIsNone(view.candidate)
+                    self.assertFalse(view.candidate_played)
+                    self.assertEqual(view.description.get('1.0','end-1c'),'我的编辑')
+        finally:
+            clear_isolated_tk_root(root)
+
+    def test_cancelled_playback_callback_discards_prepared_audio(self):
+        with tempfile.TemporaryDirectory() as temp:
+            player=Mock();view=self._view(temp,audio_player=player)
+            view.play_generation=4
+            panel.VoiceView._playback_ready(view,3,'prepared-audio',True,view._active_target_key)
+            player.discard.assert_called_once_with('prepared-audio')
+            self.assertFalse(view.candidate_played)
+
+    def test_nonactive_candidate_playback_state_preserves_saved_candidate(self):
+        with tempfile.TemporaryDirectory() as temp:
+            view=self._view(temp)
+            book=view.book_id;entity=view.targets['林舟'][0]
+            candidate={'entity':entity,'binding':{'record':{'request':{'vector_sha256':'b'*64}}}}
+            key=(book,entity)
+            view._target_states[key]={'candidate':candidate,'candidate_played':False}
+            view._active_target_key=('another-book','narrator')
+            view.play_generation=2
+            panel.VoiceView._playback_started(view,2,'prepared-audio',True,None,key)
+            self.assertIs(view._target_states[key]['candidate'],candidate)
+            self.assertTrue(view._target_states[key]['candidate_played'])
+            self.assertTrue(view._target_states[key]['playing'])
 
     def test_generate_button_reaches_candidate_ready(self):
         with tempfile.TemporaryDirectory() as temp, patch.object(panel.threading,'Thread',InlineThread), \

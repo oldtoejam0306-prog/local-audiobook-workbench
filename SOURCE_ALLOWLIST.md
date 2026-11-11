@@ -3,6 +3,8 @@
 本次分发以下源码、测试、占位配置与说明。CLEAN_COPY_MANIFEST.json 记录这些文件的大小与摘要。
 
 - `.gitignore`
+- `.impeccable/design.json`
+- `DESIGN.md`
 - `LICENSE`
 - `MATERIALS.md`
 - `NOTICE`
@@ -186,10 +188,17 @@
 - `test_workbench_real_v2_ui.py`
 - `test_workbench_runtime_jobs.py`
 - `test_workbench_voice_panel.py`
+- `test_workbench_web_frontend.mjs`
+- `test_workbench_web_launch.py`
+- `test_workbench_web_server.py`
+- `test_workbench_web_state.py`
 - `verified_index_rpc.py`
 - `verified_workspace_index.py`
 - `voice_console_backend.py`
 - `voice_design_engine.py`
+- `web/index.html`
+- `web/workbench.css`
+- `web/workbench.js`
 - `whole_book_adapters.py`
 - `whole_book_executor.py`
 - `whole_book_plan.py`
@@ -207,3 +216,6 @@
 - `workbench_real_v2_sequence_adapter.py`
 - `workbench_real_v2_ui.py`
 - `workbench_voice_panel.py`
+- `workbench_web.py`
+- `workbench_web_server.py`
+- `workbench_web_state.py`

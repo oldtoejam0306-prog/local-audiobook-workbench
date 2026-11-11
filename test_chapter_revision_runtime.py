@@ -172,9 +172,8 @@ class RenderOnlyRevisionTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "changed during"):
                 runtime.render_revision(self.context, self.stage_path, self.output_dir)
 
-    def test_rejects_changed_words_voice_or_delivery(self):
-        for index, field, value in ((0, "text", "不同句子。"), (0, "speaker_id", "speaker-1"),
-                                    (0, "delivery", "angry")):
+    def test_rejects_changed_words_or_delivery_and_unknown_speaker(self):
+        for index, field, value in ((0, "text", "不同句子。"), (0, "delivery", "angry")):
             with self.subTest(field=field):
                 changed = json.loads(self.stage_path.read_text(encoding="utf-8"))
                 changed["chapters"][0]["segments"][index][field] = value
@@ -183,13 +182,42 @@ class RenderOnlyRevisionTests(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, "words, voice, or delivery"):
                         runtime.render_revision(self.context, self.stage_path, self.output_dir)
                 self.stage_path.write_bytes(canonical(self.candidate))
+        changed = json.loads(self.stage_path.read_text(encoding="utf-8"))
+        changed["chapters"][0]["segments"][0]["speaker_id"] = "unbound-role"
+        self.stage_path.write_bytes(canonical(changed))
+        with patch.object(runtime, "get_context", return_value=self.context):
+            with self.assertRaisesRegex(ValueError, "absent from the verified source bindings"):
+                runtime.render_revision(self.context, self.stage_path, self.output_dir)
+        self.stage_path.write_bytes(canonical(self.candidate))
+
+    def test_specific_speaker_override_narrows_renderer_bindings(self):
+        changed = json.loads(canonical(self.original))
+        changed["chapters"][0]["segments"][1]["speaker_id"] = "narrator"
+        self.stage_path.write_bytes(canonical(changed))
+        get_context, render, prepare, verify, *_ = self._render_mocks()
+        with get_context, render as render_mock, prepare as prepare_mock, verify:
+            result = runtime.render_revision(self.context, self.stage_path, self.output_dir)
+        self.assertIn("chapter_wav", result)
+        self.assertEqual({"narrator"}, set(render_mock.call_args.args[4]))
+        self.assertEqual({"narrator"}, set(prepare_mock.call_args.args[4]))
+
+    def test_instruction_and_speaker_may_change_on_the_same_paragraph(self):
+        changed = json.loads(canonical(self.original))
+        segment = changed["chapters"][0]["segments"][1]
+        segment["speaker_id"] = "narrator"
+        segment["instruct"] = "自然平稳"
+        self.stage_path.write_bytes(canonical(changed))
+        get_context, render, prepare, verify, *_ = self._render_mocks()
+        with get_context, render as render_mock, prepare, verify:
+            runtime.render_revision(self.context, self.stage_path, self.output_dir)
+        self.assertEqual({"narrator"}, set(render_mock.call_args.args[4]))
 
     def test_rejects_more_than_one_instruction_and_escaped_inputs(self):
         changed = json.loads(canonical(self.candidate))
         changed["chapters"][0]["segments"][1]["instruct"] = "第二个指令"
         self.stage_path.write_bytes(canonical(changed))
         with patch.object(runtime, "get_context", return_value=self.context):
-            with self.assertRaisesRegex(ValueError, "change one explicit instruction"):
+            with self.assertRaisesRegex(ValueError, "change only one paragraph"):
                 runtime.render_revision(self.context, self.stage_path, self.output_dir)
         outside = self.root.parent / "outside-revision-stage.json"
         outside.write_bytes(canonical(self.candidate))

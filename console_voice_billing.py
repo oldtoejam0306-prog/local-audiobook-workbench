@@ -2,7 +2,9 @@
 import json
 import hashlib
 import os
+import queue
 import stat
+import threading
 import uuid
 from contextvars import ContextVar
 from decimal import Decimal, InvalidOperation
@@ -671,7 +673,8 @@ class BillingWindow(tk.Toplevel):
         self.in_price = tk.StringVar(value='2'); self.out_price = tk.StringVar(value='8')
         ttk.Label(controls, text='输入 元/百万 token').pack(side='left'); ttk.Entry(controls, textvariable=self.in_price, width=8).pack(side='left', padx=5)
         ttk.Label(controls, text='输出 元/百万 token').pack(side='left'); ttk.Entry(controls, textvariable=self.out_price, width=8).pack(side='left', padx=5)
-        ttk.Button(controls, text='刷新与重新估算', command=self.refresh).pack(side='left', padx=8)
+        ttk.Button(controls, text='刷新回执', command=self.refresh).pack(side='left', padx=8)
+        ttk.Button(controls, text='按新单价重算', command=self.recalculate).pack(side='left')
         ttk.Button(controls, text='登记本机调用证据', command=self.import_evidence).pack(side='left')
         ttk.Label(frame, text='自动发现仅覆盖本机 AudiobookTrials 中带 intent.json 的有效 deepseek-flash 回执；按来源和响应 ID 去重。HTTP 失败但响应身份与 usage 均有效时，token 会计入“已知用量”，状态列标明失败；无有效 usage、缺少去重身份、冲突或扫描不完整仍显示未知且不计入估算。默认按 2026-11-04 官方中文价卡 deepseek-flash 高峰未命中输入/输出 2/8 元估算；全部输入按未命中计，不自动判断时段。', wraplength=880).pack(anchor='w')
         ttk.Label(frame, text='价卡来源：' + PRICE_SOURCE, wraplength=880).pack(anchor='w', pady=(0, 7))
@@ -680,21 +683,109 @@ class BillingWindow(tk.Toplevel):
             self.table.heading(col, text=title); self.table.column(col, width=width, anchor='w')
         self.table.pack(fill='both', expand=True)
         self.summary = tk.StringVar(); ttk.Label(frame, textvariable=self.summary, wraplength=880).pack(anchor='w', pady=6)
+        self.refresh_status = tk.StringVar(value='正在读取本机回执…')
+        ttk.Label(frame, textvariable=self.refresh_status, wraplength=880).pack(anchor='w')
         self.detail = tk.StringVar(); ttk.Label(frame, textvariable=self.detail, wraplength=880).pack(anchor='w')
-        self.table.bind('<<TreeviewSelect>>', self.selected); self.refresh()
+        self.table.bind('<<TreeviewSelect>>', self.selected)
+        self._scan_queue = queue.Queue(); self._scan_generation = 0
+        self._scan_running = False; self._scan_closed = False
+        self.rows = []; self._has_scan_result = False; self._refresh_after_id = None
+        self._last_valid_prices = (price(self.in_price.get()), price(self.out_price.get()))
+        self.protocol('WM_DELETE_WINDOW', self._close)
+        self.refresh()
     def refresh(self):
         try: a = price(self.in_price.get()); b = price(self.out_price.get())
         except ValueError as exc: messagebox.showerror('单价无效', str(exc), parent=self); return
-        self.rows = load_records(root=self.roots[0], extra_roots=self.roots[1:]); self.table.delete(*self.table.get_children())
-        totals = usage_totals(self.rows, a, b)
-        for i, row in enumerate(self.rows):
+        self._input_price, self._output_price = a, b
+        self._last_valid_prices = (a, b)
+        self._scan_generation += 1
+        self.refresh_status.set('正在扫描本机回执…')
+        if not self._scan_running:
+            self._start_scan(self._scan_generation)
+        # Refresh clicks during a scan are coalesced into one follow-up scan.
+    def _start_scan(self, generation):
+        self._scan_running = True
+        roots = self.roots
+        def scan():
+            try:
+                rows = load_records(root=roots[0], extra_roots=roots[1:])
+                self._scan_queue.put((generation, rows, None))
+            except Exception as exc:
+                self._scan_queue.put((generation, None, exc))
+        worker = threading.Thread(target=scan, name='billing-receipt-scan', daemon=True)
+        try:
+            worker.start()
+        except Exception as exc:
+            self._scan_running = False
+            self.refresh_status.set(f'扫描未能启动，保留上次结果；可重试：{exc}')
+            return
+        self._schedule_scan_poll()
+    def _schedule_scan_poll(self):
+        if not self._scan_closed and self._refresh_after_id is None:
+            self._refresh_after_id = self.after(60, self._poll_scan)
+    def _poll_scan(self):
+        self._refresh_after_id = None
+        if self._scan_closed: return
+        try: generation, rows, error = self._scan_queue.get_nowait()
+        except queue.Empty:
+            self._schedule_scan_poll(); return
+        self._scan_running = False
+        if generation == self._scan_generation:
+            if error is not None:
+                self.refresh_status.set(f'扫描失败，保留上次结果：{error}')
+            else:
+                self._render_rows(rows=rows, prices=self._last_valid_prices)
+                self.rows = rows
+                self._has_scan_result = True
+                price_warning = ''
+                try:
+                    price(self.in_price.get()); price(self.out_price.get())
+                except ValueError:
+                    price_warning = ' 当前单价输入无效，表格保留上次有效单价。'
+                self.refresh_status.set('刷新完成；单价修改可直接重新估算。' + price_warning)
+        if generation != self._scan_generation:
+            self.refresh_status.set('有更新的刷新请求，正在重新扫描…')
+            self._start_scan(self._scan_generation)
+    def _render_rows(self, *, rows=None, prices=None):
+        rows = self.rows if rows is None else rows
+        a, b = self._last_valid_prices if prices is None else prices
+        self._input_price, self._output_price = a, b
+        self.table.delete(*self.table.get_children())
+        totals = usage_totals(rows, a, b)
+        for i, row in enumerate(rows):
             cost = estimate(row, a, b)
             self.table.insert('', 'end', iid=str(i), values=(row['label'], row['input'] if cost is not None else '—', row['output'] if cost is not None else '—', f'{cost:.6f}' if cost is not None else '—', row['status']))
-        incomplete = any(row.get('_scan_incomplete') for row in self.rows)
+        incomplete = any(row.get('_scan_incomplete') for row in rows)
         suffix = '；自动扫描不完整，自动发现费用未计入' if incomplete else ''
         known = totals['known_rows']
         self.summary.set(f'已确认用量 {len(known)} 次：输入 {sum(r["input"] for r in known):,} / 输出 {sum(r["output"] for r in known):,} tokens，费用估算 ¥{totals["estimated_cost"]:.6f}（非账单）；未知/冲突 {totals["unknown_count"]} 次未计入，重复 {totals["duplicate_count"]} 次不重复计入。{suffix}')
         self.detail.set('选中一行查看登记证据路径。')
+        self.rows = rows
+    def recalculate(self):
+        try: a = price(self.in_price.get()); b = price(self.out_price.get())
+        except ValueError as exc: messagebox.showerror('单价无效', str(exc), parent=self); return
+        self._input_price, self._output_price = a, b
+        self._last_valid_prices = (a, b)
+        if self._has_scan_result:
+            self._render_rows()
+            self.refresh_status.set('已使用当前扫描结果重新估算。')
+        else:
+            self.refresh_status.set('尚无扫描结果；正在读取本机回执…')
+            self.refresh()
+    def _close(self):
+        if self._scan_closed:
+            return
+        self._scan_closed = True
+        self._scan_generation += 1
+        if self._refresh_after_id is not None:
+            try: self.after_cancel(self._refresh_after_id)
+            except tk.TclError: pass
+            self._refresh_after_id = None
+        tk.Toplevel.destroy(self)
+    def destroy(self):
+        if getattr(self, '_scan_closed', False):
+            return
+        return self._close()
     def selected(self, _event):
         selection = self.table.selection()
         if selection:

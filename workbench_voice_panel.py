@@ -11,6 +11,8 @@ import auto_voice_planner
 import real_book_auto_voice as auto
 from audio_playback import AudioPlayback, PlaybackCancelled, parse_speed
 
+_UNSET = object()
+
 
 def entity_id(book_id, name):
     """Stable allocator identity shared by the profile workbench contract."""
@@ -120,8 +122,9 @@ class ProfileView(ttk.Frame):
         self.correction_button = ttk.Button(detail, text='为所选人物添加纠错说明', command=self._open_correction)
         self.correction_button.pack(anchor='e', pady=(4, 0))
         body_frame = ttk.Frame(detail)
+        self.body_frame = body_frame
         body_frame.pack(fill='both', expand=True, pady=(8, 0))
-        self.body = tk.Text(detail, wrap='word', height=20, font=('Microsoft YaHei UI', 10),
+        self.body = tk.Text(body_frame, wrap='word', height=20, font=('Microsoft YaHei UI', 10),
                             padx=10, pady=10, state='disabled')
         body_scroll = ttk.Scrollbar(body_frame, orient='vertical', command=self.body.yview)
         self.body.configure(yscrollcommand=body_scroll.set)
@@ -236,12 +239,15 @@ class VoiceView(ttk.Frame):
         self.operation = None
         self.play_generation = 0
         self.play_pending = False
+        self._playback_identity = None
         self.owns_busy = False
         self.external_busy = False
         self.playing = False
         self.errors = []
         self._selected_cache = {}
         self._selection_errors = {}
+        self._target_states = {}
+        self._active_target_key = None
 
         top = ttk.Frame(self)
         top.pack(fill='x')
@@ -292,6 +298,7 @@ class VoiceView(ttk.Frame):
         self.log.pack(fill='both', expand=True)
 
     def show_empty(self, text):
+        self._save_active_target_state()
         self.book_id = None
         self.document = self.plans = None
         self.targets = {}
@@ -301,11 +308,14 @@ class VoiceView(ttk.Frame):
         self.target.set('')
         self.status_tree.delete(*self.status_tree.get_children())
         self.selected_binding = self.candidate = None
+        self.candidate_played = False
+        self._active_target_key = None
         self._update_buttons()
         self.state.set(text)
         self.voice_detail.set('')
 
     def load_book(self, book_id, document, plans):
+        self._save_active_target_state()
         self.book_id, self.document, self.plans = book_id, document, plans
         self.targets = {'旁白': ('narrator', None, None)}
         plan_map = {item['character']: item for item in (plans or {}).get('plans', [])}
@@ -358,8 +368,25 @@ class VoiceView(ttk.Frame):
         if target not in self.targets:
             return
         entity, profile, plan = self.targets[target]
-        self.candidate = None
-        self.candidate_played = False
+        self._save_active_target_state()
+        key = (self.book_id, entity)
+        state = dict(self._target_states.get(key, {}))
+        signature = self._target_signature(self.book_id, entity)
+        previous_signature = state.get('signature')
+        profile_changed = bool(previous_signature and
+                               previous_signature.get('profile') != signature.get('profile'))
+        binding_changed = bool(previous_signature and
+                               previous_signature.get('binding') != signature.get('binding'))
+        if profile_changed or binding_changed:
+            state['candidate'] = None
+            state['candidate_played'] = False
+        if profile_changed:
+            state.pop('description', None)
+        state['signature'] = signature
+        self._target_states[key] = state
+        self._active_target_key = key
+        self.candidate = state.get('candidate')
+        self.candidate_played = bool(state.get('candidate_played', False))
         self.selected_binding = None
         self.description.delete('1.0', 'end')
         if entity == 'narrator':
@@ -381,8 +408,9 @@ class VoiceView(ttk.Frame):
                 text += '\n创作选择：' + '；'.join(str(item) for item in choices[:3])[:240]
             status = '人物声线候选仅是创作选择；身份与证据保持原样。'
             selection_root = Path(self.root_provider()) / 'auto-voices'
-        if text:
-            self.description.insert('1.0', text)
+        description = state.get('description', text)
+        if description:
+            self.description.insert('1.0', description)
         try:
             if entity in self._selection_errors:
                 raise ValueError(self._selection_errors[entity])
@@ -401,6 +429,65 @@ class VoiceView(ttk.Frame):
             self.state.set('选定音色记录不可读：' + str(exc))
             self.voice_detail.set('损坏记录不会被静默覆盖；如需修复，请先核对日志与向量文件。')
         self._update_buttons()
+
+    def _save_active_target_state(self):
+        key = getattr(self, '_active_target_key', None)
+        if key is None:
+            return
+        states = getattr(self, '_target_states', None)
+        if states is None:
+            self._target_states = states = {}
+        description = ''
+        try:
+            description = self.description.get('1.0', 'end-1c')
+        except (AttributeError, tk.TclError):
+            pass
+        previous = states.get(key, {})
+        states[key] = {
+            'description': description,
+            'candidate': getattr(self, 'candidate', None),
+            'candidate_played': bool(getattr(self, 'candidate_played', False)),
+            'playing': bool(getattr(self, 'playing', False) and getattr(self, '_playback_identity', None) == key),
+            'signature': previous.get('signature') or self._target_signature(*key),
+        }
+
+    def _target_signature(self, book_id, entity):
+        target = next(((profile, plan) for candidate_entity, profile, plan in self.targets.values()
+                       if candidate_entity == entity), (None, None))
+        profile, plan = target
+        narration_design = (self.document.get('narration_design')
+                            if book_id == self.book_id and entity == 'narrator'
+                            and isinstance(self.document, dict) else None)
+        profile_digest = hashlib.sha256(json.dumps(
+            {'profile': profile, 'plan': plan, 'narration_design': narration_design},
+            ensure_ascii=False, sort_keys=True,
+            separators=(',', ':'), default=str).encode('utf-8')).hexdigest()
+        binding = self._selected_cache.get(entity)
+        binding_record = binding.get('record') if isinstance(binding, dict) else None
+        binding_digest = hashlib.sha256(json.dumps(
+            {'binding': binding_record, 'error': self._selection_errors.get(entity)},
+            ensure_ascii=False, sort_keys=True, separators=(',', ':'), default=str
+        ).encode('utf-8')).hexdigest()
+        return {'profile': profile_digest, 'binding': binding_digest}
+
+    def _store_target_state(self, book_id, entity, *, candidate=_UNSET, candidate_played=None,
+                            playing=None, description=None, signature=None):
+        states = getattr(self, '_target_states', None)
+        if states is None:
+            self._target_states = states = {}
+        key = (book_id, entity)
+        state = dict(states.get(key, {}))
+        if candidate is not _UNSET:
+            state['candidate'] = candidate
+        if candidate_played is not None:
+            state['candidate_played'] = bool(candidate_played)
+        if playing is not None:
+            state['playing'] = bool(playing)
+        if description is not None:
+            state['description'] = description
+        if signature is not None:
+            state['signature'] = signature
+        states[key] = state
 
     def _current_target(self):
         if self.target.get() not in self.targets or not self.book_id:
@@ -430,6 +517,11 @@ class VoiceView(ttk.Frame):
 
     def set_playback_state(self, playing):
         self.playing = bool(playing)
+        identity = getattr(self, '_playback_identity', None)
+        if identity is not None:
+            self._store_target_state(identity[0], identity[1], playing=self.playing)
+            if not self.playing:
+                self._playback_identity = None
         self._update_buttons()
 
     def invalidate_pending_playback(self):
@@ -457,6 +549,11 @@ class VoiceView(ttk.Frame):
         root = Path(self.root_provider())
         voice_root = root / ('narrators' if entity == 'narrator' else 'auto-voices')
         output = voice_root / self.book_id / entity / 'candidates' / (str(uuid.uuid4()))
+        self._save_active_target_state()
+        generation_signature = self._target_signature(self.book_id, entity)
+        self._store_target_state(self.book_id, entity, candidate=None, candidate_played=False,
+                                 description=self.description.get('1.0', 'end-1c'),
+                                 signature=generation_signature)
         self.operation = ('generate', entity, profile, plan, description, output)
         self.candidate = None
         self.candidate_played = False
@@ -469,7 +566,7 @@ class VoiceView(ttk.Frame):
             try:
                 record = self.generator(description, output)
                 binding = candidate_binding(target_book, entity, record)
-                result = (target_book, entity, profile, plan, description, binding)
+                result = (target_book, entity, profile, plan, description, binding, generation_signature)
                 self.after(0, lambda: self._candidate_ready(result))
             except Exception as exc:
                 error = str(exc)
@@ -482,13 +579,23 @@ class VoiceView(ttk.Frame):
 
     def _candidate_ready(self, result):
         self.operation = None
-        book_id, entity, profile, plan, description, binding = result
-        if book_id != self.book_id or entity != self._current_target()[0]:
-            self._log('候选已生成，但书籍或人物选择已变化；候选保留在原隔离目录，未自动采用。')
-            self.state.set('候选生成完成；选择已变化，未采用。')
+        book_id, entity, profile, plan, description, binding = result[:6]
+        signature = result[6] if len(result) > 6 else self._target_signature(book_id, entity)
+        candidate = {'entity': entity, 'binding': binding, 'description': description,
+                     'spec_id': hashlib.sha256(description.encode('utf-8')).hexdigest()[:16]}
+        saved = self._target_states.get((book_id, entity), {})
+        signature_valid = saved.get('signature') == signature
+        active = (book_id == self.book_id and self._active_target_key == (book_id, entity)
+                  and self._target_signature(book_id, entity) == signature)
+        if signature_valid or active:
+            self._store_target_state(book_id, entity, candidate=candidate, candidate_played=False,
+                                     signature=signature)
+        if not active:
+            message = ('候选已生成；原书籍/人物身份已保留，未自动采用。切回该目标后可继续试听。'
+                       if signature_valid else '候选完成时人物档案或已选声线已变化，已忽略过期候选。')
+            self._log(message)
         else:
-            self.candidate = {'entity': entity, 'binding': binding, 'description': description,
-                              'spec_id': hashlib.sha256(description.encode('utf-8')).hexdigest()[:16]}
+            self.candidate = candidate
             self.candidate_played = False
             self.state.set('候选已生成。先试听，满意后再点“采用候选”；旧声音仍保持选定。')
             self.voice_detail.set('候选向量 SHA256 ' + binding['record']['request']['vector_sha256'])
@@ -525,6 +632,8 @@ class VoiceView(ttk.Frame):
             return
         self.play_generation += 1
         generation = self.play_generation
+        identity = self._active_target_key
+        self._playback_identity = identity
         self.play_pending = True
         self.owns_busy = True
         self.state.set('正在校验音频并准备播放…')
@@ -534,20 +643,27 @@ class VoiceView(ttk.Frame):
         def worker():
             try:
                 prepared = self._prepare_binding(binding, speed)
-                self.after(0, lambda: self._playback_ready(generation, prepared, candidate))
+                self.after(0, lambda: self._playback_ready(generation, prepared, candidate, identity))
             except Exception as exc:
                 error = str(exc)
-                self.after(0, lambda: self._playback_failed(generation, error))
+                self.after(0, lambda: self._playback_failed(generation, error, identity))
 
         try:
             threading.Thread(target=worker, daemon=True).start()
         except Exception as exc:
             self._playback_failed(generation, '播放准备线程启动失败：' + str(exc))
 
-    def _playback_ready(self, generation, prepared, candidate):
+    def _playback_ready(self, generation, prepared, candidate, identity=None):
         if generation != self.play_generation:
             discard = getattr(self.audio_player, 'discard', None)
             if callable(discard): discard(prepared)
+            return
+        if identity is not None and identity != self._active_target_key:
+            discard = getattr(self.audio_player, 'discard', None)
+            if callable(discard): discard(prepared)
+            self.play_pending = False
+            self._release_app_busy()
+            self._update_buttons()
             return
 
         def start_worker():
@@ -556,16 +672,16 @@ class VoiceView(ttk.Frame):
                     self.audio_player.start(prepared)
                 else:
                     self.audio_player(prepared)
-                self.after(0, lambda: self._playback_started(generation, prepared, candidate, None))
+                self.after(0, lambda: self._playback_started(generation, prepared, candidate, None, identity))
             except Exception as exc:
-                self.after(0, lambda error=exc: self._playback_started(generation, prepared, candidate, error))
+                self.after(0, lambda error=exc: self._playback_started(generation, prepared, candidate, error, identity))
 
         try:
             threading.Thread(target=start_worker, daemon=True).start()
         except Exception as exc:
             self._playback_failed(generation, '播放线程启动失败：' + str(exc))
 
-    def _playback_started(self, generation, prepared, candidate, error):
+    def _playback_started(self, generation, prepared, candidate, error, identity=None):
         if generation != self.play_generation:
             discard = getattr(self.audio_player, 'discard', None)
             if callable(discard): discard(prepared)
@@ -574,11 +690,18 @@ class VoiceView(ttk.Frame):
             if error:
                 raise error
             self.playing = True
+            if identity is not None:
+                self._store_target_state(identity[0], identity[1], playing=True)
             if candidate:
-                self.candidate_played = True
-                self.state.set('正在试听候选；满意后可采用。')
+                if identity is None or identity == self._active_target_key:
+                    self.candidate_played = True
+                if identity is not None:
+                    self._store_target_state(identity[0], identity[1], candidate_played=True)
+                if identity is None or identity == self._active_target_key:
+                    self.state.set('正在试听候选；满意后可采用。')
             else:
-                self.state.set('正在播放当前选定音色。')
+                if identity is None or identity == self._active_target_key:
+                    self.state.set('正在播放当前选定音色。')
             self.on_playback_state(True)
         except PlaybackCancelled:
             self.state.set('播放准备已取消。')
@@ -590,7 +713,7 @@ class VoiceView(ttk.Frame):
             self._release_app_busy()
             self._update_buttons()
 
-    def _playback_failed(self, generation, error):
+    def _playback_failed(self, generation, error, identity=None):
         if generation != self.play_generation:
             return
         self.play_pending = False
@@ -621,6 +744,9 @@ class VoiceView(ttk.Frame):
             self.play_generation += 1
             self.play_pending = False
             self.playing = False
+            if self._playback_identity is not None:
+                self._store_target_state(*self._playback_identity, playing=False)
+            self._playback_identity = None
             self._release_app_busy()
             self.on_playback_state(False)
             self.state.set('已停止播放。')

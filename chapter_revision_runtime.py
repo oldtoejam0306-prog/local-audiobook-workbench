@@ -97,33 +97,62 @@ def render_revision(context, stage_path, output_dir):
     if (stage_path.is_symlink() or not stage_path.resolve(strict=True).is_relative_to(revision_root)
             or output_dir.is_symlink() or not output_dir.resolve().is_relative_to(revision_root)):
         raise ValueError('revision files escape their chapter namespace')
-    original = json.loads(Path(fresh['normalized_stage_path']).read_text(encoding='utf-8'))
+    original_path = Path(fresh['normalized_stage_path'])
+    if (original_path.is_symlink() or not original_path.is_file()
+            or _sha(original_path) != fresh['normalized_stage_sha256']):
+        raise ValueError('verified source normalized stage changed before revision rendering')
+    original = json.loads(original_path.read_text(encoding='utf-8'))
     candidate = json.loads(stage_path.read_text(encoding='utf-8'))
-    before = original['chapters'][0]['segments']
-    after = candidate['chapters'][0]['segments']
+    if (not isinstance(original, dict) or not isinstance(candidate, dict)
+            or not isinstance(original.get('chapters'), list) or len(original['chapters']) != 1
+            or not isinstance(candidate.get('chapters'), list) or len(candidate['chapters']) != 1
+            or not isinstance(original['chapters'][0], dict)
+            or not isinstance(candidate['chapters'][0], dict)):
+        raise ValueError('revision changed the chapter source structure')
+    before = original['chapters'][0].get('segments')
+    after = candidate['chapters'][0].get('segments')
     if (candidate['chapters'][0].get('id') != fresh['chapter_id']
-            or len(candidate['chapters']) != 1 or len(before) != len(after)
+            or not isinstance(before, list) or not isinstance(after, list) or len(before) != len(after)
+            or any(not isinstance(row, dict) for row in before + after)
             or candidate.get('audit') != original.get('audit')):
         raise ValueError('revision changed the chapter source structure')
     changed = []
+    available_roles = set(fresh['voice_bindings'])
     for index, (old, new) in enumerate(zip(before, after)):
-        if {k: v for k, v in old.items() if k != 'instruct'} != {
-                k: v for k, v in new.items() if k != 'instruct'}:
+        changed_fields = {key for key in set(old) | set(new)
+                          if old.get(key) != new.get(key) or (key in old) != (key in new)}
+        if changed_fields - {'instruct', 'speaker_id'}:
             raise ValueError('revision changed paragraph words, voice, or delivery')
-        if old.get('instruct') != new.get('instruct'):
+        if 'speaker_id' in changed_fields and new.get('speaker_id') not in available_roles:
+            raise ValueError('revision speaker override is absent from the verified source bindings')
+        if 'instruct' in changed_fields:
             validate_override(new.get('instruct'))
+        if changed_fields:
             changed.append(index)
     if len(changed) != 1:
-        raise ValueError('a paragraph revision must change one explicit instruction')
+        raise ValueError('a paragraph revision must change only one paragraph instruction and/or speaker')
+    expected = json.loads(json.dumps(original, ensure_ascii=False))
+    expected_segment = expected['chapters'][0]['segments'][changed[0]]
+    candidate_segment = after[changed[0]]
+    if 'speaker_id' in candidate_segment:
+        expected_segment['speaker_id'] = candidate_segment['speaker_id']
+    if 'instruct' in candidate_segment:
+        expected_segment['instruct'] = candidate_segment['instruct']
+    if expected != candidate:
+        raise ValueError('revision changed content outside the selected paragraph override')
+    output_roles = {segment['speaker_id'] for segment in after}
+    if not output_roles or not output_roles <= available_roles:
+        raise ValueError('revision output speaker set is not covered by verified source bindings')
+    role_bindings = {role: fresh['voice_bindings'][role] for role in output_roles}
     output_dir.mkdir(parents=True, exist_ok=True)
     receipt = renderer.render(stage_path, fresh['book_id'], fresh['chapter_id'],
-                              fresh['source_sha256'], fresh['voice_bindings'], output_dir)
+                              fresh['source_sha256'], role_bindings, output_dir)
     for key in ('manifest_path', 'chapter_wav'):
         produced = Path(receipt[key])
         if produced.is_symlink() or not produced.resolve(strict=True).is_relative_to(output_dir.resolve(strict=True)):
             raise ValueError('renderer output escaped the revision output directory')
     document, assignments = renderer.prepare(stage_path, fresh['book_id'], fresh['chapter_id'],
-                                             fresh['source_sha256'], fresh['voice_bindings'])
+                                             fresh['source_sha256'], role_bindings)
     verified = renderer.verify(Path(receipt['manifest_path']).parent, document,
                                assignments, fresh['source_sha256'])
     after_render = get_context(context['runtime_root'], context['book_id'], context['chapter_id'])

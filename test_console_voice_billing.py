@@ -4,7 +4,7 @@ from decimal import Decimal
 from unittest.mock import Mock, patch
 from console_voice_billing import (_saved_receipts, load_records, estimate, price,
                                    register_evidence, imported_records,
-                                   _is_reparse_point, usage_totals)
+                                   _is_reparse_point, usage_totals, BillingWindow)
 import console_voice_billing as billing
 
 class BillingTest(unittest.TestCase):
@@ -423,4 +423,129 @@ class BillingTest(unittest.TestCase):
     def test_bad_prices(self):
         for val in ('NaN','-1','abc','Infinity'):
             with self.assertRaises(ValueError): price(val)
+    class _FakeWindow:
+        """Small Tk-shaped harness for exercising async window callbacks headlessly."""
+        def __init__(self):
+            import queue
+            self._scan_queue=queue.Queue(); self._scan_generation=0
+            self._scan_running=False; self._scan_closed=False; self._refresh_after_id=None
+            self.roots=(Path('.'),); self.rows=[]; self.in_price=Mock(); self.out_price=Mock()
+            self.in_price.get.return_value='2'; self.out_price.get.return_value='8'
+            self._last_valid_prices=(price('2'),price('8'))
+            self.refresh_status=Mock(); self.table=Mock(); self.summary=Mock(); self.detail=Mock()
+            self.table.get_children.return_value=()
+            self.after_calls=[]; self.after_cancel=Mock(); self.destroy=Mock(); self.event_ticks=0
+            for name in ('_start_scan','_schedule_scan_poll','_poll_scan','_render_rows','_close','recalculate'):
+                setattr(self,name,lambda *args,_name=name,**kwargs:getattr(BillingWindow,_name)(self,*args,**kwargs))
+        def after(self, delay, callback):
+            self.after_calls.append((delay, callback)); return len(self.after_calls)
+        def process_event(self): self.event_ticks+=1
+        def poll(self):
+            pending=self.after_calls
+            self.after_calls=[]
+            for _delay, callback in pending: callback()
+
+    def _wait_for_scans(self, app, predicate, timeout=2):
+        import time
+        end=time.monotonic()+timeout
+        while time.monotonic()<end:
+            app.poll()
+            if predicate(): return
+            time.sleep(.005)
+        self.fail('background scan did not reach expected state')
+
+    def test_slow_scan_returns_to_event_loop_and_coalesces_repeated_refresh(self):
+        import threading, time
+        app=self._FakeWindow(); started=threading.Event(); release=threading.Event(); calls=[]
+        def slow_load(**_kwargs):
+            calls.append(len(calls)+1); started.set(); release.wait(2)
+            return [{'label':'scan '+str(calls[-1]),'source':'x','input':10,'output':2,'status':'ok'}]
+        with patch.object(billing, 'load_records', side_effect=slow_load):
+            t0=time.monotonic(); BillingWindow.refresh(app)
+            self.assertLess(time.monotonic()-t0, .15)
+            self.assertTrue(started.wait(1)); app.process_event(); self.assertEqual(app.event_ticks,1)
+            BillingWindow.refresh(app); BillingWindow.refresh(app); BillingWindow.refresh(app)
+            release.set()
+            self._wait_for_scans(app, lambda: len(calls)==2 and not app._scan_running and not app.after_calls)
+        self.assertEqual(len(calls),2)
+        self.assertEqual(app.rows[0]['label'],'scan 2')
+
+    def test_closed_window_discards_scan_result_without_tk_write(self):
+        import threading
+        app=self._FakeWindow(); started=threading.Event(); release=threading.Event()
+        def slow_load(**_kwargs): started.set(); release.wait(2); return [{'input':1,'output':1}]
+        with patch.object(billing,'load_records',side_effect=slow_load):
+            BillingWindow.refresh(app); self.assertTrue(started.wait(1))
+            app.refresh_status.set.reset_mock()
+            with patch('tkinter.Toplevel.destroy'): BillingWindow._close(app)
+            release.set()
+            import time; time.sleep(.03)
+            self.assertEqual(app.rows,[]); app.refresh_status.set.assert_not_called()
+            app.poll(); self.assertEqual(app.rows,[])
+
+    def test_scan_error_preserves_rows_and_recalculation_does_not_rescan(self):
+        app=self._FakeWindow(); app.rows=[{'label':'kept','source':'x','input':1000000,'output':0,'status':'ok'}]
+        app._has_scan_result=True
+        with patch.object(billing,'load_records',side_effect=OSError('synthetic scan failure')):
+            BillingWindow.refresh(app)
+            self._wait_for_scans(app,lambda: not app._scan_running and not app.after_calls)
+        self.assertEqual(app.rows[0]['label'],'kept')
+        self.assertIn('保留上次结果',app.refresh_status.set.call_args.args[0])
+        with patch.object(billing,'load_records') as loader:
+            BillingWindow.recalculate(app)
+        loader.assert_not_called()
+        self.assertEqual(app.rows[0]['input'],1000000)
+
+    def test_render_uses_new_rows_for_incomplete_scan_marker(self):
+        app=self._FakeWindow()
+        app.rows=[{'label':'old','input':2,'output':1,'status':'ok'}]
+        new_rows=[{'label':'new','input':None,'output':None,'status':'未知 / 扫描不完整',
+                   '_scan_incomplete':True}]
+        BillingWindow._render_rows(app,rows=new_rows)
+        self.assertIn('自动扫描不完整',app.summary.set.call_args.args[0])
+        self.assertEqual(app.rows,new_rows)
+
+    def test_thread_start_failure_resets_state_and_allows_retry(self):
+        app=self._FakeWindow()
+        with patch('threading.Thread.start',side_effect=RuntimeError('synthetic thread failure')) as start:
+            BillingWindow.refresh(app)
+            self.assertFalse(app._scan_running)
+            self.assertIn('扫描未能启动',app.refresh_status.set.call_args.args[0])
+            BillingWindow.refresh(app)
+        self.assertEqual(start.call_count,2)
+        self.assertFalse(app._scan_running)
+
+    def test_isolated_tk_heartbeat_runs_during_scan_and_close_discards_result(self):
+        import threading, time, tkinter as tk
+        try:
+            root=tk.Tk()
+        except tk.TclError as exc:
+            self.skipTest(f'isolated Tk is unavailable: {exc}')
+            return
+        root.withdraw()
+        try:
+            started=threading.Event(); release=threading.Event()
+            def slow_load(**_kwargs): started.set(); release.wait(2); return []
+            with tempfile.TemporaryDirectory() as td, patch.object(billing,'load_records',side_effect=slow_load):
+                window=BillingWindow(root,roots=(Path(td),)); window.withdraw()
+                self.assertTrue(started.wait(1))
+                heartbeat=[]; root.after(0,lambda:heartbeat.append('alive'))
+                deadline=time.monotonic()+1
+                while not heartbeat and time.monotonic()<deadline: root.update(); time.sleep(.005)
+                self.assertEqual(heartbeat,['alive'])
+                writes=[]; window.refresh_status.trace_add('write',lambda *_:writes.append(1))
+                before=len(writes); root.destroy(); release.set()
+                time.sleep(.04)
+                self.assertEqual(len(writes),before)
+                self.assertTrue(window._scan_closed)
+        finally:
+            try: root.destroy()
+            except tk.TclError: pass
+
+    def test_invalid_prices_do_not_start_background_scan(self):
+        app=self._FakeWindow(); app.in_price.get.return_value='NaN'
+        with patch.object(billing,'load_records') as loader, patch.object(billing.messagebox,'showerror'):
+            BillingWindow.refresh(app)
+        loader.assert_not_called()
+        self.assertFalse(app._scan_running)
 if __name__ == '__main__': unittest.main()

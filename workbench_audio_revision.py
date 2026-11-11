@@ -13,6 +13,8 @@ from pathlib import Path
 import re
 import uuid
 
+from delivery_policy import validate_override
+
 
 _HASH = re.compile(r"[0-9a-f]{64}\Z")
 _ID = re.compile(r"[A-Za-z0-9_.-]{1,100}\Z")
@@ -175,11 +177,31 @@ def _paragraphs(verified):
     return out
 
 
-def _expected_native_stage(stage_path, verified):
+def _revision_voice_bindings(verified, stage):
+    chapters = stage.get("chapters") if isinstance(stage, dict) else None
+    if not isinstance(chapters, list) or len(chapters) != 1:
+        raise ValueError("revision stage chapter structure invalid")
+    if chapters[0].get("id") != verified["chapter_id"]:
+        raise ValueError("revision stage chapter identity changed")
+    segments = chapters[0].get("segments")
+    if not isinstance(segments, list) or not segments:
+        raise ValueError("revision stage paragraphs missing")
+    if any(not isinstance(row, dict) or not isinstance(row.get("speaker_id"), str)
+           or not row["speaker_id"] for row in segments):
+        raise ValueError("revision stage speaker identity invalid")
+    roles = {row["speaker_id"] for row in segments}
+    if not roles or not roles <= set(verified["voice_bindings"]):
+        raise ValueError("revision stage uses a speaker without a verified source binding")
+    bindings = {role: verified["voice_bindings"][role] for role in roles}
+    hashes = {role: verified["voice_hashes"][role] for role in roles}
+    return bindings, hashes
+
+
+def _expected_native_stage(stage_path, verified, role_bindings=None):
     """Mirror the renderer's prepare/normalize path without rendering audio."""
     import real_book_renderer as renderer
     bindings = {}
-    for role, binding in verified["voice_bindings"].items():
+    for role, binding in (role_bindings or verified["voice_bindings"]).items():
         record = binding.get("record") if isinstance(binding, dict) and isinstance(binding.get("record"), dict) else binding
         key = record.get("book_role_key") if isinstance(record, dict) else None
         if not isinstance(key, str):
@@ -217,7 +239,7 @@ def _revision_dir(verified, revision_id):
 
 
 def _verify_render_receipt(receipt, verified, expected_original_stage_sha256,
-                           expected_normalized_stage_sha256):
+                           expected_normalized_stage_sha256, expected_voice_hashes=None):
     if not isinstance(receipt, dict):
         raise ValueError("renderer did not return a verified receipt")
     wav_path, wav_raw = _read_pinned(receipt.get("chapter_wav"), receipt.get("wav_sha256"), "revision WAV")
@@ -237,17 +259,28 @@ def _verify_render_receipt(receipt, verified, expected_original_stage_sha256,
             or Path(entry.get("path", "")).resolve(strict=True) != wav_path):
         raise ValueError("revision render receipt source/audio binding mismatch")
     _native_receipt(manifest, manifest_path, source_sha=verified["source_sha256"],
-                    stage_sha=expected_normalized_stage_sha256, voice_hashes=verified["voice_hashes"],
+                    stage_sha=expected_normalized_stage_sha256,
+                    voice_hashes=expected_voice_hashes or verified["voice_hashes"],
                     wav_sha=_sha(wav_raw), label="revision")
     return {**receipt, "chapter_wav": str(wav_path), "manifest_path": str(manifest_path),
             "wav_sha256": _sha(wav_raw), "manifest_sha256": _sha(manifest_raw)}
 
 
-def generate(context, paragraph_id, instruction, render, *, revision_id=None):
-    """Render an isolated candidate with one optional instruction change."""
+def generate(context, paragraph_id, instruction, render, *, revision_id=None, speaker_id=None):
+    """Render one isolated paragraph with an optional instruction and/or known speaker override."""
     if not callable(render):
         raise ValueError("injected local renderer required")
-    if not isinstance(instruction, str) or not instruction.strip() or len(instruction) > 500 or not instruction.isprintable():
+    if speaker_id is not None and (not isinstance(speaker_id, str) or not speaker_id):
+        raise ValueError("speaker override must name an existing source role")
+    if instruction is not None and not isinstance(instruction, str):
+        raise ValueError("instruction must be text or None")
+    has_instruction = isinstance(instruction, str) and bool(instruction.strip())
+    normalized_instruction = instruction.strip() if has_instruction else None
+    if normalized_instruction is not None:
+        if len(instruction) > 500 or not instruction.isprintable():
+            raise ValueError("instruction must be 1–500 printable characters")
+        validate_override(normalized_instruction)
+    if normalized_instruction is None and speaker_id is None:
         raise ValueError("instruction must be 1–500 printable characters")
     with _book_lock(Path(context["runtime_root"]) if context.get("runtime_root") else None,
                     context.get("book_id")):
@@ -255,37 +288,51 @@ def generate(context, paragraph_id, instruction, render, *, revision_id=None):
         paragraph = next((p for p in _paragraphs(verified) if p["id"] == paragraph_id), None)
         if paragraph is None:
             raise ValueError("paragraph ID is stale or unknown")
+        if speaker_id is not None and speaker_id not in verified["voice_bindings"]:
+            raise ValueError("speaker override is not present in the verified source bindings")
+        if (normalized_instruction is None and speaker_id == paragraph["speaker_id"]):
+            raise ValueError("speaker override and instruction produce no paragraph change")
         revision_id = revision_id or uuid.uuid4().hex
         target = _revision_dir(verified, revision_id)
         target.mkdir(parents=True, exist_ok=False)
         stage_path = target / "normalized-stage.json"
         derived = json.loads(verified["normalized_raw"])
         segment = derived["chapters"][0]["segments"][paragraph["index"]]
-        segment["instruct"] = instruction.strip()
+        if normalized_instruction is not None:
+            segment["instruct"] = normalized_instruction
+        if speaker_id is not None:
+            segment["speaker_id"] = speaker_id
         if ("".join(row["text"] for row in derived["chapters"][0]["segments"]) !=
-                "".join(row["text"] for row in verified["normalized"]["chapters"][0]["segments"])
-                or [row["speaker_id"] for row in derived["chapters"][0]["segments"]] !=
-                [row["speaker_id"] for row in verified["normalized"]["chapters"][0]["segments"]]):
-            raise ValueError("revision changed source text or speaker coverage")
+                "".join(row["text"] for row in verified["normalized"]["chapters"][0]["segments"])):
+            raise ValueError("revision changed source text")
         stage_raw = _canonical(derived)
         with stage_path.open("xb") as stream:
             stream.write(stage_raw); stream.flush(); os.fsync(stream.fileno())
         output_dir = target / "render-output"
         output_dir.mkdir()
-        expected_native_sha = _expected_native_stage(stage_path, verified)
+        revision_bindings, revision_voice_hashes = _revision_voice_bindings(verified, derived)
+        expected_native_sha = _expected_native_stage(stage_path, verified, revision_bindings)
         derived_stage_sha = _sha(stage_raw)
         receipt = _verify_render_receipt(render(context, stage_path, output_dir), verified,
-                                         derived_stage_sha, expected_native_sha)
-        record = {"version": 1, "status": "candidate", "revision_id": revision_id,
+                                         derived_stage_sha, expected_native_sha, revision_voice_hashes)
+        after_render = _context(context)
+        context_pins = ("source_sha256", "normalized_stage_sha256", "base_manifest_sha256",
+                        "base_wav_sha256", "voice_fingerprint")
+        if any(after_render[key] != verified[key] for key in context_pins):
+            raise ValueError("verified source/base/voices changed during revision rendering")
+        record = {"version": 2, "status": "candidate", "revision_id": revision_id,
                   "book_id": verified["book_id"], "chapter_id": verified["chapter_id"],
                   "source_sha256": verified["source_sha256"],
                   "normalized_stage_sha256": verified["normalized_stage_sha256"],
                   "base_manifest_sha256": verified["base_manifest_sha256"],
                   "base_wav_sha256": verified["base_wav_sha256"],
                   "voice_fingerprint": verified["voice_fingerprint"],
+                  "revision_voice_hashes": revision_voice_hashes,
+                  "revision_voice_fingerprint": _sha(_canonical(revision_voice_hashes)),
                   "paragraph_id": paragraph_id, "paragraph_index": paragraph["index"],
-                  "speaker_id": paragraph["speaker_id"], "paragraph_text_sha256": paragraph["text_sha256"],
-                  "instruction": instruction.strip(), "derived_stage_sha256": derived_stage_sha,
+                  "speaker_id": paragraph["speaker_id"], "speaker_override_id": speaker_id,
+                  "paragraph_text_sha256": paragraph["text_sha256"],
+                  "instruction": normalized_instruction, "derived_stage_sha256": derived_stage_sha,
                   "derived_native_stage_sha256": expected_native_sha,
                   "receipt": receipt}
         record["record_sha256"] = _sha(_canonical(record))
@@ -314,9 +361,48 @@ def _load_revision(verified, revision_id):
     unsigned = dict(record); claimed = unsigned.pop("record_sha256", None)
     if claimed != _sha(_canonical(unsigned)):
         raise ValueError("revision record digest mismatch")
+    expected_voice_hashes = verified["voice_hashes"]
+    record_version = record.get("version", 1)
+    if type(record_version) is not int or record_version not in (1, 2):
+        raise ValueError("revision record version unsupported")
+    if record_version == 2:
+        paragraph = next((row for row in _paragraphs(verified)
+                          if row["id"] == record.get("paragraph_id")), None)
+        if (paragraph is None or type(record.get("paragraph_index")) is not int
+                or paragraph["index"] != record["paragraph_index"]
+                or paragraph["speaker_id"] != record.get("speaker_id")
+                or paragraph["text_sha256"] != record.get("paragraph_text_sha256")):
+            raise ValueError("revision paragraph identity changed")
+        override = record.get("speaker_override_id")
+        if override is not None and (not isinstance(override, str)
+                                     or override not in verified["voice_bindings"]):
+            raise ValueError("revision speaker override is not source-bound")
+        instruction = record.get("instruction")
+        if instruction is not None:
+            validate_override(instruction)
+        if instruction is None and (override is None or override == paragraph["speaker_id"]):
+            raise ValueError("revision has no effective paragraph change")
+        stage_path, stage_raw = _read_pinned(path.parent / "normalized-stage.json",
+                                             record.get("derived_stage_sha256"), "revision stage")
+        expected_stage = json.loads(verified["normalized_raw"])
+        segment = expected_stage["chapters"][0]["segments"][paragraph["index"]]
+        if instruction is not None:
+            segment["instruct"] = instruction
+        if override is not None:
+            segment["speaker_id"] = override
+        if _canonical(expected_stage) != stage_raw:
+            raise ValueError("revision stage differs from its bound paragraph override")
+        revision_bindings, expected_voice_hashes = _revision_voice_bindings(verified, expected_stage)
+        if (record.get("revision_voice_hashes") != expected_voice_hashes
+                or record.get("revision_voice_fingerprint") != _sha(_canonical(expected_voice_hashes))):
+            raise ValueError("revision output voice hashes do not match its stage")
+        expected_native_sha = _expected_native_stage(stage_path, verified, revision_bindings)
+        if record.get("derived_native_stage_sha256") != expected_native_sha:
+            raise ValueError("revision native stage digest mismatch")
     receipt = _verify_render_receipt(record.get("receipt"), verified,
                                      record.get("derived_stage_sha256"),
-                                     record.get("derived_native_stage_sha256"))
+                                     record.get("derived_native_stage_sha256"),
+                                     expected_voice_hashes)
     return record, receipt
 
 

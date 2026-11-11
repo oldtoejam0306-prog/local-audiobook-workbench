@@ -2,8 +2,18 @@
   "files": [
     {
       "path": ".gitignore",
-      "size_bytes": 498,
-      "sha256": "59c65e537f72cf9e40a3b1fd79533beb2674bd40b42a4ae2a4798a3102b15101"
+      "size_bytes": 544,
+      "sha256": "e8552e79d599bb206cff826fb797883b460a12c2528b8c48e7740d1a2888dc4a"
+    },
+    {
+      "path": ".impeccable/design.json",
+      "size_bytes": 21452,
+      "sha256": "313a86908e698dd25a2ee75746fa9f7e8468006d8fa08b7963208d3a630b6532"
+    },
+    {
+      "path": "DESIGN.md",
+      "size_bytes": 11785,
+      "sha256": "08b09f34eac92e2a7c38b4058b184f51318be55a94a0c11f47c0d07b55fc93e3"
     },
     {
       "path": "LICENSE",
@@ -12,8 +22,8 @@
     },
     {
       "path": "MATERIALS.md",
-      "size_bytes": 5106,
-      "sha256": "65d770abe1f63a81c23b169647cec8ea660ca5b34cc6031893cf36d94767cb69"
+      "size_bytes": 5583,
+      "sha256": "742002730a9f8dfc7ab4305b403ea8fbd99e4ee21fabcd4984cf1b878d2a823b"
     },
     {
       "path": "NOTICE",
@@ -22,13 +32,13 @@
     },
     {
       "path": "README.md",
-      "size_bytes": 14368,
-      "sha256": "65f79e448a1846c50de49831f379e378ee776fd0daa6751a5576413aef8c3347"
+      "size_bytes": 17265,
+      "sha256": "7f18ab25f86e096661745f33742c1f11e73c9cb906976ef9d9bbffae4d08cf43"
     },
     {
       "path": "SOURCE_ALLOWLIST.md",
-      "size_bytes": 6801,
-      "sha256": "10bf5be0cb43345ac1125bd8f96043b321c10c82701a2080651f0be2ec193639"
+      "size_bytes": 7127,
+      "sha256": "a7d3461c8e5a2aae339e688c2d9634255e5787c8e650b99ddb368c140062abdc"
     },
     {
       "path": "THIRD_PARTY_NOTICES.md",
@@ -77,8 +87,8 @@
     },
     {
       "path": "audio_playback.py",
-      "size_bytes": 7139,
-      "sha256": "4b08a4995701ee9dac4dc522c8a5748e670fcb269f53aa58a5a45821c4033f83"
+      "size_bytes": 19276,
+      "sha256": "319f442d8d9f44e6aeb78366518b02f50193bf288bf29d1ba35c6d9a9f773bd8"
     },
     {
       "path": "audiobook_ingest_cli.py",
@@ -157,8 +167,8 @@
     },
     {
       "path": "chapter_revision_runtime.py",
-      "size_bytes": 8230,
-      "sha256": "5132e161c5827900996ba2fdce28fe0dfdecacba1f98fad8e75017a1831d0552"
+      "size_bytes": 10246,
+      "sha256": "32c20d642b5b23e97d528fce4c5cfb11f5856824217cff0b1ac74db4e3ba570b"
     },
     {
       "path": "character_fusion.py",
@@ -192,8 +202,8 @@
     },
     {
       "path": "console_voice_billing.py",
-      "size_bytes": 40316,
-      "sha256": "effef7b7819dba5f4b27148dbfb44f77f5713861efb1d9db587a6fff0416c993"
+      "size_bytes": 44644,
+      "sha256": "7cd4c178fb83a504a4265746582df2d32a73c380959bd46d36c43b8c75743ed2"
     },
     {
       "path": "console_voice_launch.cmd",
@@ -587,8 +597,8 @@
     },
     {
       "path": "test_audio_playback.py",
-      "size_bytes": 7034,
-      "sha256": "5a7245a3f45472c32204dbf80eb9e146d53b38fd592b75e5e9d35092f0e9a005"
+      "size_bytes": 20683,
+      "sha256": "a956e6e405b7ea82d3db63dc080822dbe45a5cf22a8168ca4dabceaa47f06ed5"
     },
     {
       "path": "test_auto_voice_planner.py",
@@ -627,8 +637,8 @@
     },
     {
       "path": "test_chapter_revision_runtime.py",
-      "size_bytes": 13148,
-      "sha256": "e2125a2f2e17d07a94128a4bd731fdb6c6cb72bc246d1e521fc555b791af1d9d"
+      "size_bytes": 14951,
+      "sha256": "6cf8dec8da33b32cf904b190443393b3f2ae45f789f38895e99f3852941e2aa2"
     },
     {
       "path": "test_character_profile_jobs.py",
@@ -642,8 +652,8 @@
     },
     {
       "path": "test_console_voice_billing.py",
-      "size_bytes": 27143,
-      "sha256": "52e16ad089f277626be0ed65282eee93f242f9aec9706f59e5d5b1733b792912"
+      "size_bytes": 34159,
+      "sha256": "8a79445d511dc7a74c69cfbd9a6dc7d76759ae171724edc80d154d0c7c52d305"
     },
     {
       "path": "test_console_voice_transfer.py",
@@ -872,8 +882,8 @@
     },
     {
       "path": "test_workbench_audio_revision.py",
-      "size_bytes": 19642,
-      "sha256": "0726b8f22e5e96dca3ecda9d7279592f88dd1bc54b8653d84fcd73be2fb88f33"
+      "size_bytes": 24535,
+      "sha256": "7d98e0509b2b9e4a9a0d4025a81ef10e45f9039298d22829d3e5fbfb5a6d3030"
     },
     {
       "path": "test_workbench_job_store.py",
@@ -917,8 +927,28 @@
     },
     {
       "path": "test_workbench_voice_panel.py",
-      "size_bytes": 14196,
-      "sha256": "f49c9272abaebca76588669e65d1fad5418ad32ecf2f00d92150e82a56ba5f62"
+      "size_bytes": 24155,
+      "sha256": "b66668fa75a02f6006b8e72f9ab27c0b824fe4098d2ffad474623afbe4da8ebe"
+    },
+    {
+      "path": "test_workbench_web_frontend.mjs",
+      "size_bytes": 13402,
+      "sha256": "d9fb79e1cb9fe9662f0a79381e843e87515ed2cd3116be28fab475f8f52fee9c"
+    },
+    {
+      "path": "test_workbench_web_launch.py",
+      "size_bytes": 4893,
+      "sha256": "e62e362fc7a000b72aa7841bc67a8aa09387778765032d1d64614578640273ae"
+    },
+    {
+      "path": "test_workbench_web_server.py",
+      "size_bytes": 9122,
+      "sha256": "878b98cec6f26b589005f03fc89f7b57276abc823f4f0db8a1933142cccecfb0"
+    },
+    {
+      "path": "test_workbench_web_state.py",
+      "size_bytes": 26295,
+      "sha256": "4791a8a5b225adca6c5e224c2c7e9f70264264242f592879aca3c940aa6d429c"
     },
     {
       "path": "verified_index_rpc.py",
@@ -941,6 +971,21 @@
       "sha256": "fcdfe4f281617badbb3b5c5b38d7c1840300053e04e39075b2a1cb7f9adf7b57"
     },
     {
+      "path": "web/index.html",
+      "size_bytes": 5004,
+      "sha256": "7cc9c1e9f3ae14aa7eea2027317cae881b842f4531a85b696d8e1b246a7ea4e4"
+    },
+    {
+      "path": "web/workbench.css",
+      "size_bytes": 25298,
+      "sha256": "dd170feba724282cfc823a0435bda6e6244e6ad7730279e7b454dffe9fbe7410"
+    },
+    {
+      "path": "web/workbench.js",
+      "size_bytes": 69382,
+      "sha256": "7a45e1c540e91a97b7aea3fe989de8fa80c50b892152be6866a2b7493af4b4ab"
+    },
+    {
       "path": "whole_book_adapters.py",
       "size_bytes": 10842,
       "sha256": "aa37d0aa4e884bba6067845a8818160e933332ffc2a887953a368c6e0b2bae96"
@@ -957,8 +1002,8 @@
     },
     {
       "path": "workbench_audio_revision.py",
-      "size_bytes": 23492,
-      "sha256": "4dd53a5cbdd9ae2f860994aea9e096c6f34c41555845229b44a586da3b13fd6f"
+      "size_bytes": 29103,
+      "sha256": "72302e6d76b88556c5b96b285457bb33ce9c4a795870762517b6f696c8ad2ab2"
     },
     {
       "path": "workbench_job_store.py",
@@ -1022,8 +1067,23 @@
     },
     {
       "path": "workbench_voice_panel.py",
-      "size_bytes": 32629,
-      "sha256": "1c67e36f14c4bee74fdbabdeb517a98e981332a1bd56b5518bb797c051aa6df7"
+      "size_bytes": 39293,
+      "sha256": "8e841397a062b39fce0016763705798a17b1fdaead2ccdc792846604b1c0c607"
+    },
+    {
+      "path": "workbench_web.py",
+      "size_bytes": 3108,
+      "sha256": "50fcf7b10270caaf334ef2153a86b6e5b93d60e6a41b979591fc6158e33ffe8b"
+    },
+    {
+      "path": "workbench_web_server.py",
+      "size_bytes": 14364,
+      "sha256": "8fbe34756011866c03d29b446cc1a68228aee559d42a9dbf81b337183415497b"
+    },
+    {
+      "path": "workbench_web_state.py",
+      "size_bytes": 35701,
+      "sha256": "7cbfa9de4fd6fc5752db9257bb58ab8c688d8ac0ab069be48e368c2208645c6d"
     }
   ]
 }

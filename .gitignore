@@ -39,3 +39,5 @@ provider-cache/
 profile-tasks/
 unit-cache/
 playback-cache/
+web-session.private.json
+.web-launch-locks/
