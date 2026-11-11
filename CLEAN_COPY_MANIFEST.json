@@ -2,8 +2,8 @@
   "files": [
     {
       "path": ".gitignore",
-      "size_bytes": 544,
-      "sha256": "e8552e79d599bb206cff826fb797883b460a12c2528b8c48e7740d1a2888dc4a"
+      "size_bytes": 644,
+      "sha256": "2a1c9817137873753e907500c2861282f7c0032f929aec026b5fc9cb021b73dc"
     },
     {
       "path": ".impeccable/design.json",
@@ -22,8 +22,8 @@
     },
     {
       "path": "MATERIALS.md",
-      "size_bytes": 5583,
-      "sha256": "742002730a9f8dfc7ab4305b403ea8fbd99e4ee21fabcd4984cf1b878d2a823b"
+      "size_bytes": 7111,
+      "sha256": "08382c7c37dc1b789e2ddfa96fdb03268a8a132136c4d2b08b366938a7fb0785"
     },
     {
       "path": "NOTICE",
@@ -32,18 +32,18 @@
     },
     {
       "path": "README.md",
-      "size_bytes": 17265,
-      "sha256": "7f18ab25f86e096661745f33742c1f11e73c9cb906976ef9d9bbffae4d08cf43"
+      "size_bytes": 19526,
+      "sha256": "f4fe2086597011e719a6fea3eaabbe756bf2fc6aa62eedc5bdc0b4b621e943a7"
     },
     {
       "path": "SOURCE_ALLOWLIST.md",
-      "size_bytes": 7127,
-      "sha256": "a7d3461c8e5a2aae339e688c2d9634255e5787c8e650b99ddb368c140062abdc"
+      "size_bytes": 7417,
+      "sha256": "0342c34ada2b45e9f5ead88164b7b24086886f7bc7dbcbc8648a7e7aaf9a72c4"
     },
     {
       "path": "THIRD_PARTY_NOTICES.md",
-      "size_bytes": 1394,
-      "sha256": "d3c8dfcc1f04ac9306d29446571094fb800a15b523137a8c241a644b38cd3d3d"
+      "size_bytes": 2120,
+      "sha256": "20fa8f24651de9cd8fb17994e1279177afc7247fe64dd09b546718b131d5409a"
     },
     {
       "path": "analysis_dispatch_cache.py",
@@ -69,6 +69,21 @@
       "path": "asr_spot_check.py",
       "size_bytes": 8678,
       "sha256": "93ac743b1dbe56acb9a547565b01ea55e66675013cb7cfb89af2792d77bb62c1"
+    },
+    {
+      "path": "assets/app-icon/audiobook-workbench.ico",
+      "size_bytes": 37398,
+      "sha256": "4c30e05face7dcde40e601bd07d17ec4dee5f7a69d3618db014c41b4ca19b7d1"
+    },
+    {
+      "path": "assets/app-icon/audiobook-workbench.png",
+      "size_bytes": 171696,
+      "sha256": "144bc5c33241b34dc67186e9bd89b777e1b0e9b10007d05762ee6ae112dbff69"
+    },
+    {
+      "path": "assets/app-icon/audiobook-workbench.svg",
+      "size_bytes": 496,
+      "sha256": "a64a9116bb443f39cfdd2f777bd0e51c4ac5e3c73c5008091831bc860020f47f"
     },
     {
       "path": "attribution_batch_validation.py",
@@ -279,6 +294,21 @@
       "path": "delivery_policy.py",
       "size_bytes": 5085,
       "sha256": "2d5810d783cf5ad1154412cf9438bd561f9c7079fbb282448d1d6cb90f347681"
+    },
+    {
+      "path": "desktop/WEBVIEW2-LICENSE.txt",
+      "size_bytes": 1514,
+      "sha256": "2827394f331d7daec33319ee5edaca666521093fdf4dda80c9e15e1490f7826a"
+    },
+    {
+      "path": "desktop/WorkbenchDesktop.cs",
+      "size_bytes": 15587,
+      "sha256": "4547772788ab170eb6c4b91034aca89e2fbef269745d575ae4f2ad588dfb2879"
+    },
+    {
+      "path": "desktop/build_desktop.ps1",
+      "size_bytes": 2650,
+      "sha256": "1bbaf6152c2c6787ca4d232130d5e9cb20e736e979cdce35ebb6d52f4b086f64"
     },
     {
       "path": "experimental_isolated_voice_library.py",
@@ -886,6 +916,11 @@
       "sha256": "7d98e0509b2b9e4a9a0d4025a81ef10e45f9039298d22829d3e5fbfb5a6d3030"
     },
     {
+      "path": "test_workbench_desktop.py",
+      "size_bytes": 8243,
+      "sha256": "1c68a0d669fd6459b63c6fd89d9f5a1517f3458ab974a457a076590239ee4b6b"
+    },
+    {
       "path": "test_workbench_job_store.py",
       "size_bytes": 28443,
       "sha256": "95ff5bca5ddf84fadda2f3c32f29ca676ca448216c3048ffc77e8e7f0d5fc79a"
@@ -932,8 +967,8 @@
     },
     {
       "path": "test_workbench_web_frontend.mjs",
-      "size_bytes": 13402,
-      "sha256": "d9fb79e1cb9fe9662f0a79381e843e87515ed2cd3116be28fab475f8f52fee9c"
+      "size_bytes": 15465,
+      "sha256": "8f5df8279dfcb874773ce04a5069aed15ff89d008caecc1d43f204e495b36e37"
     },
     {
       "path": "test_workbench_web_launch.py",
@@ -982,8 +1017,8 @@
     },
     {
       "path": "web/workbench.js",
-      "size_bytes": 69382,
-      "sha256": "7a45e1c540e91a97b7aea3fe989de8fa80c50b892152be6866a2b7493af4b4ab"
+      "size_bytes": 69561,
+      "sha256": "632a448562be264722384607e42e74b797f59d8b8da1526b8e781c461b5b28bf"
     },
     {
       "path": "whole_book_adapters.py",
@@ -1004,6 +1039,11 @@
       "path": "workbench_audio_revision.py",
       "size_bytes": 29103,
       "sha256": "72302e6d76b88556c5b96b285457bb33ce9c4a795870762517b6f696c8ad2ab2"
+    },
+    {
+      "path": "workbench_desktop.py",
+      "size_bytes": 5718,
+      "sha256": "d0349ca920765d563e006fb9eeba07e1b8bf033f3a742f4ce8667134a8eba4cb"
     },
     {
       "path": "workbench_job_store.py",

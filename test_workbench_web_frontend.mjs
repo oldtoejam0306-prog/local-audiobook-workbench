@@ -192,6 +192,53 @@ test('book scoped chapter actions are gated by active service busy state', async
   assert.deepEqual(calls, []);
 });
 
+function makeShutdownUI(actionImpl, windowRef = {}) {
+  const ui = Object.create(frontend.WorkbenchUI.prototype);
+  ui.state = { book_id: 'book-a', busy: null };
+  ui.content = { dataset: { bookId: 'book-a', chapterId: '' } };
+  ui.window = windowRef;
+  ui.client = { action: actionImpl };
+  ui.latestActionId = 0; ui.stateEpoch = 0; ui.pendingActionId = 0; ui.pendingActionName = '';
+  ui.updatePlaybackControls = () => {};
+  ui.applyState = (state) => { ui.state = state; };
+  ui.setLiveStatus = () => {};
+  ui.schedulePoll = () => {};
+  ui.shutdownRequested = true;
+  return ui;
+}
+
+test('accepted shutdown notifies the native desktop host once', async () => {
+  const messages = [];
+  const ui = makeShutdownUI(async () => ({ book_id: 'book-a', busy: null }), { chrome: { webview: { postMessage: (message) => messages.push(message) } } });
+  await ui.runAction('shutdown');
+  assert.deepEqual(messages, ['audiobook-close-window']);
+});
+
+test('accepted shutdown works normally without a WebView bridge', async () => {
+  const ui = makeShutdownUI(async () => ({ book_id: 'book-a', busy: null }));
+  await assert.doesNotReject(ui.runAction('shutdown'));
+  assert.equal(ui.state.book_id, 'book-a');
+});
+
+test('failed shutdown does not notify the native desktop host', async () => {
+  const messages = [];
+  const ui = makeShutdownUI(async () => { throw new Error('shutdown rejected'); }, { chrome: { webview: { postMessage: (message) => messages.push(message) } } });
+  await ui.runAction('shutdown');
+  assert.deepEqual(messages, []);
+  assert.equal(ui.shutdownRequested, false);
+});
+
+test('stale shutdown response does not notify the native desktop host', async () => {
+  const messages = [];
+  let resolveAction;
+  const ui = makeShutdownUI(() => new Promise((resolve) => { resolveAction = resolve; }), { chrome: { webview: { postMessage: (message) => messages.push(message) } } });
+  const pending = ui.runAction('shutdown');
+  ui.latestActionId += 1;
+  resolveAction({ book_id: 'book-a', busy: null });
+  await pending;
+  assert.deepEqual(messages, []);
+});
+
 test('stop and media preparation keep play, speed, and seek locked until the action settles', () => {
   const ui = Object.create(frontend.WorkbenchUI.prototype);
   const controls = {

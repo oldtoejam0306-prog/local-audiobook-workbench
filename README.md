@@ -31,9 +31,9 @@ DeepSeek 对选定章节输出结构化对白归属、朗读情绪和章节摘�
 
 ## 工作台页面与可调整内容
 
-- **制作** 页面读取已登记索引并选择章节范围，可分析所选章节人物、开始分析与配音、请求当前阶段完成后暂停、查看人物归属原因、查看章节进度、播放已有音频和打开段落修订。暂停会等待当前分析或合成阶段结束。
-- **人物** 页面查看按书保存的人物档案、来源引文与不确定项，也可以填写供后续章节引用的纠错说明。
-- **声音** 页面查看本书旁白和人物绑定，编辑虚构声音描述、生成候选、试听并明确采用。画像更新会形成新的声音创作候选。
+- **章节** 页面读取已登记索引并选择章节范围，可分析所选章节人物、开始分析与配音、请求当前阶段完成后暂停、查看人物归属原因、查看章节进度和播放已有音频。暂停会等待当前分析或合成阶段结束。
+- **校听** 页面打开章节段落修订，查看经回执核验的原文与声音信息，可修改朗读指令或选择该章已有绑定中的说话人，再生成候选、试听、采用或恢复原章。
+- **人物与声音** 页面查看按书保存的人物档案、来源引文与不确定项，填写供后续章节引用的纠错说明，也可查看旁白和人物绑定、编辑虚构声音描述、生成声音候选、试听并明确采用。画像更新会形成新的声音创作候选。
 
 声音描述影响 VoiceDesign 所生成的候选声线。例如可以描述为“音区明亮偏高、吐字灵活、节奏轻快，适合话多的喜剧角色”。段落修订中的朗读指令作用于所选段落的候选合成，例如“少拖腔，句尾自然收住”。效果通过候选试听判断。
 
@@ -82,10 +82,11 @@ ASR 抽检通过命令行执行，输出部分语音单元的转写差异候选�
 
 公开配置适配器另外完成了 Mac 三声线短文本实机合成与缓存复用，第二次运行 3 个单元全部命中缓存。Mac 上 11 项资源/COW 测试通过。
 
-- Python 离线回归为 558 通过、5 跳过。跳过项涉及平台与链接能力，合成 DOCX 拒绝测试产生一条重复 ZIP 条目提示。
-- Node 四组测试共 36 项通过。187 个 Python 文件与 10 个 MJS 文件通过语法检查。
+- Python 离线回归为 567 通过、5 跳过。跳过项涉及平台与链接能力，合成 DOCX 拒绝测试产生一条重复 ZIP 条目提示。Node 四组测试共 40 项通过。189 个 Python 文件与 10 个 MJS 文件通过语法检查。
 
-浏览器接线已使用自写正文与 PCM 音频完成生成候选、开始试听、采用、恢复原章、诊断和费用操作的离线闭环。已有真实材料完成索引、八章进度、人物档案、章节音频播放、拖动定位、停止重播与 1.08 倍速核验。浅暗主题和菜单的 Enter、Escape、方向键操作在 Chromium 中通过，速度与说话人选择器均实测为 14px 字号、40px 高和 12px 圆角。本轮新增语音修订的实际合成听感留待使用者试听。
+此前的浏览器接线使用自写正文与 PCM 音频完成生成候选、开始试听、采用、恢复原章、诊断和费用操作的离线闭环。已有真实材料完成索引、八章进度、人物档案、章节音频播放、拖动定位、停止重播与 1.08 倍速核验。浅暗主题和菜单的 Enter、Escape、方向键操作在 Chromium 中通过，速度与说话人选择器均实测为 14px 字号、40px 高和 12px 圆角。本轮新增语音修订的实际合成听感留待使用者试听。
+
+实窗验收确认独立 `AudiobookWorkbench.exe` 窗口及图标正常显示，并读取现有服务的八章状态和 16 个人物声音档案。C005 音频总时长约 10 分 20 秒，抽测播放进度增长至 28 秒并停止成功。费用页读取 30 条 confirmed、1 条 unknown，共 31 条回执。重复启动前置现有窗口，进程中只有一个 host。关闭窗口后原服务仍运行。另在隔离空书目中验证了页面“退出工作台”会关闭 host 和隔离服务。本次未发起新的语音合成或付费生成。
 
 段落修订已完成真实工作台操作验收，包含生成候选、启动试听、采用、普通章节播放和恢复原章。该次整章重排新生成2个单元、复用80个单元。另有两章各8个语音单元通过本地ASR抽样转写对照，原文和音频哈希保留在私有验收记录中。
 
@@ -97,7 +98,7 @@ ASR 抽检通过命令行执行，输出部分语音单元的转写差异候选�
 
 ## 环境与配置
 
-Windows 需要 Python 3.10+、Tk、winsound、OpenSSH、现代浏览器，以及用于倍速播放的 FFmpeg。Mac 需要已安装的 Huashuo、MLX/MLX Audio、NumPy、兼容的 Qwen3-TTS 模型、FFmpeg、FFprobe 与 macOS sandbox-exec。Node.js 18+ 用于 DeepSeek worker。
+Windows 默认桌面入口需要 Python 3.10+（包含 Tk 与 `winsound`）、.NET Framework 4.6.2+、已安装的 Microsoft Edge WebView2 Runtime、OpenSSH 和用于倍速播放的 FFmpeg。Mac 需要已安装的 Huashuo、MLX/MLX Audio、NumPy、兼容的 Qwen3-TTS 模型、FFmpeg、FFprobe 与 macOS sandbox-exec。Node.js 18+ 用于 DeepSeek worker。
 
 仓库分发源码、测试、占位配置和许可证。权重、书稿、索引、声线向量、音频、调用回执与填写后的配置由用户保存在私有目录。
 
@@ -114,13 +115,24 @@ Windows 倍速播放依次查找 `AudioPlayback(ffmpeg=...)` 显式参数、`AUD
 
 ```powershell
 $env:AUDIOBOOK_CONFIG_FILE = "C:/private/audiobook-windows.json"
+$env:AUDIOBOOK_WORKBENCH_ROOT = "C:/private/audiobook-workbench"
 $env:DEEPSEEK_API_KEY = "<your-key>"
-python workbench_web.py
+python workbench_desktop.py
 ```
 
-模型 key 只从进程环境读取。工作台会在创建调用任务前做凭据预检，结果不确定的付费请求会停下并保留原始回执。
+`workbench_desktop.py` 默认寻找 `desktop/bin/AudiobookWorkbench.exe`，也可用 `AUDIOBOOK_DESKTOP_HOST` 指定 host 路径。图标默认使用 `assets/app-icon/audiobook-workbench.ico`，可由 `AUDIOBOOK_APP_ICON` 覆盖。源码分发不包含 EXE、WebView2 SDK DLL 或 loader DLL。首次使用需通过本机已安装的 .NET Framework C# 编译器构建 host：
 
-浏览器工作台提供浅色与暗色主题，使用 Windows 本机的 `127.0.0.1` 随机端口和会话令牌连接 Python 制作适配层。重复启动会打开已有本机会话。页面中的“退出工作台”可在空闲时关闭本机会话。原 Tk 入口仍可使用 `python workbench_real_v2_ui.py` 启动。
+```powershell
+.\desktop\build_desktop.ps1 -SdkDir "C:\path\to\Microsoft.Web.WebView2.SDK" `
+  -OutputDirectory ".\desktop\bin" `
+  -IconPath ".\assets\app-icon\audiobook-workbench.ico"
+```
+
+`-SdkDir` 指向 WebView2 SDK 目录，其中 Core/WinForms DLL 可直接位于该目录，或位于 `lib\net462` 子目录。`runtimes\win-x64\native\WebView2Loader.dll` 应位于该目录下。脚本使用 `%WINDIR%\Microsoft.NET\Framework64\v4.0.30319\csc.exe` 编译 x64 WinForms host，并把所需 WebView2 DLL、loader、图标和许可文本复制到输出目录。构建产物只供本机运行，不属于源码分发。
+
+桌面 host 使用 WebView2 显示工作台页面，通过 `workbench_web.py --no-browser` 复用或启动本机 Python service。首次构建后运行 `python workbench_desktop.py`。如果 host 或 WebView2 Runtime 缺失，会显示错误，不会自动打开系统浏览器。重复启动会前置现有桌面窗口。关闭窗口只关闭 host，后台 service 与进行中的任务继续运行，重新打开可查看任务状态。页面中的“退出工作台”仅在空闲时关闭本机 service。旧 Tk 入口仍可由使用者显式运行 `python workbench_real_v2_ui.py`。浏览器模式也可显式运行 `python workbench_web.py`，都不是桌面入口的自动 fallback。
+
+模型 key 只从进程环境读取。工作台会在创建调用任务前做凭据预检，结果不确定的付费请求会停下并保留原始回执。
 
 ## 准备新的书籍
 

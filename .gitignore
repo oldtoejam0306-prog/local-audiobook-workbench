@@ -41,3 +41,8 @@ unit-cache/
 playback-cache/
 web-session.private.json
 .web-launch-locks/
+.desktop-launch-locks/
+desktop/bin/
+desktop/obj/
+desktop-webview2/
+desktop-service-startup.log

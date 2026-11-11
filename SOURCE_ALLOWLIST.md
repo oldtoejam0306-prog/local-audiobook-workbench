@@ -16,6 +16,9 @@
 - `annotation_job.py`
 - `approved-workers/deepseek_profile.mjs`
 - `asr_spot_check.py`
+- `assets/app-icon/audiobook-workbench.ico`
+- `assets/app-icon/audiobook-workbench.png`
+- `assets/app-icon/audiobook-workbench.svg`
 - `attribution_batch_validation.py`
 - `attribution_result_validation.py`
 - `attribution_staging_adapter.py`
@@ -58,6 +61,9 @@
 - `correction_memory.py`
 - `deepseek_single_chapter_experiment.mjs`
 - `delivery_policy.py`
+- `desktop/WEBVIEW2-LICENSE.txt`
+- `desktop/WorkbenchDesktop.cs`
+- `desktop/build_desktop.ps1`
 - `experimental_isolated_voice_library.py`
 - `experimental_mac_text_voice_child.py`
 - `experimental_mac_voice_orchestrator.py`
@@ -179,6 +185,7 @@
 - `test_whole_book_plan.py`
 - `test_whole_book_safety_audit.py`
 - `test_workbench_audio_revision.py`
+- `test_workbench_desktop.py`
 - `test_workbench_job_store.py`
 - `test_workbench_real.py`
 - `test_workbench_real_control.py`
@@ -203,6 +210,7 @@
 - `whole_book_executor.py`
 - `whole_book_plan.py`
 - `workbench_audio_revision.py`
+- `workbench_desktop.py`
 - `workbench_job_store.py`
 - `workbench_real.py`
 - `workbench_real_control.py`

@@ -4,6 +4,9 @@ This source distribution uses external runtime dependencies and services. Instal
 
 ## Runtime components
 
+- Microsoft Edge WebView2 SDK (Core, WinForms, and `WebView2Loader.dll`): the included license notice is at [`desktop/WEBVIEW2-LICENSE.txt`](desktop/WEBVIEW2-LICENSE.txt) (BSD-3-Clause terms). The SDK and build output are not bundled in this source distribution. Build locally with an installed WebView2 SDK and retain its applicable notices.
+- Microsoft Edge WebView2 Runtime: required on Windows to run the desktop host and installed separately. No runtime installer or runtime binaries are included.
+- .NET Framework: the desktop host uses WinForms and requires the installed .NET Framework runtime. The build script invokes the machine's 64-bit .NET Framework C# compiler; no framework assemblies or compiler are bundled.
 - Huashuo: upstream repository `wixette/huashuo`, Apache License 2.0. This candidate imports the installed package/CLI and does not copy its source.
 - MLX and MLX Audio: upstream projects identify the MIT License. They are used by the Mac-side voice experiment when installed separately.
 - NumPy: BSD-3-Clause.

@@ -1084,6 +1084,9 @@ export class WorkbenchUI {
       this.pendingActionId = 0;
       this.pendingActionName = '';
       this.updatePlaybackControls();
+      if (action === 'shutdown') {
+        try { this.window?.chrome?.webview?.postMessage?.('audiobook-close-window'); } catch { /* Native close bridge is optional. */ }
+      }
     } catch (error) {
       if (actionId !== this.latestActionId) { this.schedulePoll(); return; }
       this.stateEpoch += 1;
